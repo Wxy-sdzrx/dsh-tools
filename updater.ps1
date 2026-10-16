@@ -15,7 +15,7 @@
     · 只覆盖运行文件，不碰 dsh-config.js（每台机器的更新地址可能不同）。
     · 完全绕开 WPS —— 它是个独立进程，不受 WPS 沙箱限制。
 #>
-param([switch]$Show)
+param([switch]$Show, [switch]$Daily)
 
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
@@ -53,6 +53,22 @@ function Get-File($url, $dst) {
         catch { Say ('  ' + (Split-Path $dst -Leaf) + ' 第 ' + $k + ' 次下载失败: ' + $_.Exception.Message); if ($k -lt 4) { Start-Sleep -Milliseconds (500 * $k) } }
     }
     return $false
+}
+
+# ---------- ⓪ 开机自启模式：每天最多查一次 ----------
+# 这个模式由 HKCU 的 Run 项在登录时调用。每次开机都联网查一遍没必要，
+# 用文件时间戳限制成 20 小时内只查一次（留点余量，避免刚好 24 小时差一点就跳过）。
+if ($Daily) {
+    $stamp = Join-Path $Here 'last-check.txt'
+    if (Test-Path $stamp) {
+        try {
+            if (((Get-Date) - (Get-Item $stamp).LastWriteTime).TotalHours -lt 20) {
+                Say '今天已查过，跳过'
+                exit 0
+            }
+        } catch { }
+    }
+    try { [System.IO.File]::WriteAllText($stamp, (Get-Date).ToString('s')) } catch { }
 }
 
 # ---------- ① 更新地址：优先 dsh-config.js，退回 update-url.txt ----------

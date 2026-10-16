@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.7.0';
+var DSH_VERSION = '1.8.0';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -1037,9 +1037,12 @@ async function DSH_onNewVersion(L, manual) {
             DSH_pollUpdateResult(t0, 10, function (R) {
                 if (!R) {
                     DSH_say('已请求自动更新，但没能确认结果。\n\n' +
-                            '最可能的原因：WPS 弹出的安全确认框没有点【是】。\n' +
-                            '（那个框是 WPS 的自我保护，每次都会问，必须点「是」。）\n\n' +
-                            '也可以等一会儿重新点「检查更新」，或手动下载安装包。');
+                            '插件已在安装时注册了开机自动更新，' +
+                            '下次开机它会自己完成，不需要你操作。\n\n' +
+                            '想立刻更新，双击这个文件即可：\n' +
+                            DSH_installDir() + 'update.bat\n\n' +
+                            '（注：WPS 的安全确认框点了「是」也不会真的执行外部程序，' +
+                            '这是它的沙箱行为，所以自动更新不走 WPS。）');
                     return;
                 }
                 if (R.ok) {
