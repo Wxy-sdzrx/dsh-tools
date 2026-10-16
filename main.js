@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.9.0';
+var DSH_VERSION = '1.9.1';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */

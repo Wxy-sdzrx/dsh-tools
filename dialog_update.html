@@ -4,22 +4,33 @@
 <meta charset="utf-8">
 <title>检查更新</title>
 <style>
+  /* 布局要点：用【真正的 flex 纵向布局】而不是绝对定位。
+     早先用 position:absolute 把「关闭」浮在右下角，内容一长就压到它下面 ——
+     重叠是必然的，不是偶然。现在内容区自己滚动、底部按钮是独立一行，物理上不可能重叠。 */
   html, body { margin:0; padding:0; height:100%; overflow:hidden; }
   body { font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif; font-size:12.5px;
-         color:#222; background:#fff; padding:12px 14px 48px; box-sizing:border-box; }
+         color:#222; background:#fff; }
+  .page { display:none; height:100%; flex-direction:column; padding:12px 14px; box-sizing:border-box; }
+  .page.on { display:flex; }
+  .scroll { flex:1 1 auto; min-height:0; overflow:auto; }
+  .ft { flex:0 0 auto; text-align:right; padding-top:9px; }
+  .ft button { padding:5px 16px; font-size:12.5px; cursor:pointer; margin-left:8px; }
+  .ft button.primary { background:#1a7f37; color:#fff; border:1px solid #1a7f37; border-radius:3px; }
+
   .hd  { font-size:14.5px; font-weight:600; margin:0 0 5px; }
   .hd.ok { color:#1a7f37; }
   .ver { margin:0 0 7px; color:#444; line-height:1.7; }
   .ver b { font-family:Consolas,"Microsoft YaHei UI",monospace; }
   .ver b.new { color:#1a7f37; }
   .note { color:#555; background:#f8f8f8; border-left:3px solid #e3e3e3; padding:5px 8px;
-          margin:0 0 8px; max-height:46px; overflow:auto; white-space:pre-wrap;
+          margin:0 0 8px; max-height:44px; overflow:auto; white-space:pre-wrap;
           line-height:1.45; font-size:11.5px; }
   .row { display:flex; align-items:center; border:1px solid #e4e4e4; border-radius:4px;
          padding:6px 8px; margin-bottom:7px; }
-  .row .txt { flex:1; min-width:0; line-height:1.45; }
+  .row:last-child { margin-bottom:0; }
+  .row .txt { flex:1 1 auto; min-width:0; line-height:1.5; }
   .row .txt b { display:block; font-size:12.5px; margin-bottom:1px; }
-  .row .txt span { color:#777; font-size:11.5px; }
+  .row .txt span { color:#777; font-size:11.5px; display:block; }
   .row .txt em { color:#8a5a00; font-style:normal; }
   .row button { flex:0 0 auto; margin-left:10px; padding:5px 12px; font-size:12.5px;
                 cursor:pointer; border:1px solid #c2c2c2; border-radius:3px;
@@ -30,77 +41,82 @@
   .st { color:#444; min-height:17px; font-size:12.5px; }
   .st.dim { color:#888; }
   .list { margin:7px 0 0; font-family:Consolas,"Microsoft YaHei UI",monospace;
-          font-size:11px; color:#aaa; line-height:1.65; max-height:96px; overflow:hidden; }
+          font-size:11px; color:#aaa; line-height:1.6; }
   .list .d { color:#1a7f37; }
   .list .c { color:#111; font-weight:600; }
   .warn { color:#8a5a00; background:#fff8e6; border:1px solid #f0dca8; border-radius:3px;
           padding:5px 8px; margin-top:7px; line-height:1.45; font-size:11.5px; }
   .url { width:100%; box-sizing:border-box; font-family:Consolas,monospace; font-size:11.5px;
          padding:5px 7px; border:1px solid #c2c2c2; border-radius:3px; margin-top:8px; }
-  .ft { position:absolute; right:14px; bottom:12px; }
-  .ft button { padding:5px 16px; font-size:12.5px; cursor:pointer; margin-left:8px; }
-  .ft button.primary { background:#1a7f37; color:#fff; border:1px solid #1a7f37; border-radius:3px; }
-  .warn.inline { margin:0 0 8px; }
 </style>
 </head>
 <body>
 
 <!-- 询问 -->
-<div id="ask">
-  <div class="hd">发现新版本</div>
-  <div class="ver">当前版本 <b id="cur">—</b>　→　最新版本 <b class="new" id="new">—</b></div>
-  <div class="note" id="note">—</div>
-  <div class="warn inline" id="autoTip" style="display:none">这是 WPS 启动时自动检查发现的，不用急着处理。</div>
+<div id="ask" class="page on">
+  <div class="scroll">
+    <div class="hd">发现新版本</div>
+    <div class="ver">当前版本 <b id="cur">—</b>　→　最新版本 <b class="new" id="new">—</b></div>
+    <div class="note" id="note">—</div>
+    <div class="warn" id="autoTip" style="display:none;margin-top:0">这是 WPS 启动时自动检查发现的，不用急着处理。</div>
 
-  <div class="row">
-    <div class="txt">
-      <b>方式一：直接更新</b>
-      <span>由插件自动下载并替换，完成后重启 WPS 生效。</span>
-      <span><em>需先关闭 WPS 的「沙箱保护」</em>（设置中心 → 安全）。</span>
+    <div class="row">
+      <div class="txt">
+        <b>方式一：直接更新</b>
+        <span>由插件自动下载并替换，完成后重启 WPS 生效。</span>
+        <span><em>需先关闭 WPS 的「沙箱保护」</em>（设置中心 → 安全）。</span>
+      </div>
+      <button class="primary" id="go1">直接更新</button>
     </div>
-    <button class="primary" id="go1">直接更新</button>
-  </div>
 
-  <div class="row">
-    <div class="txt">
-      <b>方式二：复制下载链接</b>
-      <span>一键复制安装包地址，粘贴到浏览器下载。<em>不需改任何设置。</em></span>
+    <div class="row">
+      <div class="txt">
+        <b>方式二：复制下载链接</b>
+        <span>一键复制安装包地址，粘贴到浏览器下载。<em>不需改任何设置。</em></span>
+      </div>
+      <button id="go2">复制链接</button>
     </div>
-    <button id="go2">复制链接</button>
   </div>
-
   <div class="ft"><button id="no">关闭</button></div>
 </div>
 
 <!-- 进行中 -->
-<div id="work" style="display:none">
-  <div class="hd">正在更新…</div>
-  <div class="bar"><div id="fill"></div></div>
-  <div class="st" id="st">正在启动更新器…</div>
-  <div class="list" id="list"></div>
-  <div class="warn">若系统弹出「已拦截 / 是否允许」提示，<b>请选择【放行】</b>，否则更新无法完成。</div>
+<div id="work" class="page">
+  <div class="scroll">
+    <div class="hd">正在更新…</div>
+    <div class="bar"><div id="fill"></div></div>
+    <div class="st" id="st">正在启动更新器…</div>
+    <div class="list" id="list"></div>
+    <div class="warn">若系统弹出「已拦截 / 是否允许」提示，<b>请选择【放行】</b>，否则更新无法完成。</div>
+  </div>
 </div>
 
 <!-- 成功 -->
-<div id="done" style="display:none">
-  <div class="hd ok">★ 更新成功</div>
-  <div class="st" id="doneMsg">—</div>
-  <div class="warn">请【完全退出 WPS 再打开】，新版本才会生效。</div>
+<div id="done" class="page">
+  <div class="scroll">
+    <div class="hd ok">★ 更新成功</div>
+    <div class="st" id="doneMsg">—</div>
+    <div class="warn">请【完全退出 WPS 再打开】，新版本才会生效。</div>
+  </div>
   <div class="ft"><button id="ok2" class="primary">确定</button></div>
 </div>
 
 <!-- 链接已复制 -->
-<div id="link" style="display:none">
-  <div class="hd ok">★ 链接已复制</div>
-  <div class="st" id="linkMsg">粘贴到浏览器地址栏即可下载。</div>
-  <input class="url" id="urlBox" readonly spellcheck="false">
+<div id="link" class="page">
+  <div class="scroll">
+    <div class="hd ok">★ 链接已复制</div>
+    <div class="st" id="linkMsg">粘贴到浏览器地址栏即可下载。</div>
+    <input class="url" id="urlBox" readonly spellcheck="false">
+  </div>
   <div class="ft"><button id="ok4" class="primary">确定</button></div>
 </div>
 
 <!-- 已排队 -->
-<div id="err" style="display:none">
-  <div class="hd">已排队：稍后自动完成</div>
-  <div class="st" id="errMsg" style="font-size:11.5px;line-height:1.55">—</div>
+<div id="err" class="page">
+  <div class="scroll">
+    <div class="hd">已排队：稍后自动完成</div>
+    <div class="st" id="errMsg" style="font-size:11.5px;line-height:1.6">—</div>
+  </div>
   <div class="ft">
     <button id="copy2">复制下载链接</button>
     <button id="ok3" class="primary">关闭</button>
@@ -120,7 +136,8 @@
   function show(id) {
     var ids = ['ask', 'work', 'done', 'link', 'err'];
     for (var i = 0; i < ids.length; i++) {
-      document.getElementById(ids[i]).style.display = (ids[i] === id) ? '' : 'none';
+      var el = document.getElementById(ids[i]);
+      if (ids[i] === id) { el.className = 'page on'; } else { el.className = 'page'; }
     }
   }
   function closeMe() {
@@ -164,7 +181,7 @@
     show('link');
   }
 
-  /* 读更新器写下的进度。插件读不了文件，所以靠注入同目录的 update-status.js。 */
+  /* 读更新器写下的进度。插件读不了文件，靠注入同目录的 update-status.js。 */
   function pollStatus(sinceTs, cb) {
     var old = document.getElementById('dshSt');
     if (old) { try { old.parentNode.removeChild(old); } catch (e) { } }
@@ -208,14 +225,9 @@
       var ps = 'powershell.exe';
       var psArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + dir + 'updater.ps1"';
       if (OA && typeof OA.ShellExecute === 'function') {
-        /* vbs 排第一：由 wscript.exe 跑，不创建控制台窗口（bat 由 cmd 跑，必有黑框）。
-           实测 ShellExecute(powershell, 参数) 和在 WPS 里也抛错，
-           所以「只给一个文件路径」是唯一能用的形式。 */
-        /* 候选只保留【文件路径】这一种形式。
-           曾加过自定义 URL 协议 bianjie-update:// 想绕开沙箱，实测证伪：
-             · 沙箱开着时被拦；沙箱关掉后仍然抛错；
-             · 未注册该协议的机器上，Windows 会弹「获取打开此链接的应用」——纯干扰。
-           所以整条删除，不再注册也不再尝试。 */
+        /* 只给【文件路径】这一种形式。
+           曾加过自定义 URL 协议，实测：沙箱开着被拦、关掉也抛错，
+           而且在没注册过的机器上会让 Windows 弹「获取打开此链接的应用」——纯干扰，已删除。 */
         var tries = [
           function () { OA.ShellExecute(vbs); },
           function () { OA.ShellExecute(bat); },
