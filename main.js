@@ -32,7 +32,7 @@ var DSH_OPTIONS = {
     seqRenumberAll: false,  // true = 选区内有内容的数字格也一律重新编号；
                             // false = 保留原有数值，只重新套用选定格式
     updateCheck: true,      // 启动后检查一次新版本。失败【完全静默】，绝不影响任何功能
-    autoInstall: true       // 发现新版就【自动下载并覆盖安装】，无需用户操作。
+    useUpdater: true        // 发现新版就【自动下载并覆盖安装】，无需用户操作。
                             // 走 fetch 下载（GitHub Pages 送 ACAO:*，file:// 页面也能取）
                             // + WPS JSAPI 的 FileSystem.writeFileString 落盘。
                             // 任何一步失败即中止，绝不留下半新半旧的安装目录。
@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.5.2';
+var DSH_VERSION = '1.6.1';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -906,23 +906,19 @@ function dshRibbonLoad(ribbon) {
       更新提示是锦上添花，绝不能变成新的故障点。
    3. 一个 WPS 会话内只自动提示一次，不反复打断。 */
 
-/* ======================= 自动下载安装 ======================= */
-/* 为什么可行（三条都是实测/查证过的，不是推测）：
-   ① 下载：GitHub Pages 对所有资源送 Access-Control-Allow-Origin: *，
-      连 file:// 页面（Origin: null）也能 fetch。对照 Gitee raw 没有 ACAO，所以那边不行。
-   ② 落盘：WPS JSAPI 暴露 Application.FileSystem，含 writeFileString / readFileString。
-   ③ 安装目录：不用问任何 API —— 页面自己的 location.href 就是
-      file:///C:/.../BianjieTools_1.4.2/index.html，从它反推即可。
+/* ======================= 自动更新（拉起独立更新器） ======================= */
+/* 为什么是「外挂一个更新器」，而不是插件自己写文件：
+   · 下载这一环是通的 —— GitHub Pages 对所有资源送 Access-Control-Allow-Origin: *，
+     file:// 页面（Origin: null）也能 fetch。实测四个文件都下载成功。
+   · 但写盘这一环死了 —— WPS 的 FileSystem.writeFileString 不接受路径。
+     官方人员答复：「这个 api 比较老了，不能传递路径，只能传递文档名，
+     然后会往浏览器缓存路径下写文件」。实测报错 path cannot contains "/" or "\"，与此吻合。
+   · 所以真正的自动更新必须由一个【独立进程】去改文件。
+     大地插件就是这么做的（它有个 Updater\UpdaterReset\updater.exe）。
+     我们等价地用一个 updater.ps1，完全绕开 WPS 沙箱。
 
-   安全性设计（这是自改代码，必须保守）：
-   · 【先把四个文件全部下载成功，再开始写】。任何一个没拿到就整个中止，
-     绝不会出现"新 main.js + 旧 ribbon.xml"这种半新半旧的安装目录。
-   · 只覆盖运行文件，不动 dsh-config.js（那是每台机器各自的配置）、
-     不动 publish.xml、不改目录名。
-   · 全程 try/catch，失败静默 —— 自动更新坏了，五个功能照常能用。 */
-
-/* 需要覆盖的运行文件。dsh-config.js 不在内（每台机器的更新地址不同）。 */
-var DSH_UPDATE_FILES = ['index.html', 'main.js', 'ribbon.xml', 'dialog_sum.html'];
+   怎么拉起：wps.OAAssist.ShellExecute。它可能被 WPS「沙箱保护」拦，
+   所以逐个候选写法试；全都失败就退回"给你下载地址"，绝不假装成功。 */
 
 /* 当前加载项的安装目录（Windows 路径，以反斜杠结尾）。
    从页面 URL 反推，不依赖 FileSystem / Env 之类的 API 是否可用。 */
@@ -931,138 +927,73 @@ function DSH_installDir() {
         var href = String(window.location.href).split('?')[0].split('#')[0];
         var i = href.lastIndexOf('/');
         if (i < 0) return '';
-        var dir = decodeURIComponent(href.substring(0, i + 1));   // file:///C:/.../BianjieTools_1.4.2/
+        var dir = decodeURIComponent(href.substring(0, i + 1));   // file:///C:/.../BianjieTools_1.5.2/
         var m = /^file:\/\/\/(.+)$/i.exec(dir);
         if (!m) return '';
-        return m[1].replace(/\//g, '\\');                          // C:\...\BianjieTools_1.4.2\
+        return m[1].replace(/\//g, '\\');                          // C:\...\BianjieTools_1.5.2\
     } catch (e) { return ''; }
 }
 
-/* 探测一个可写的 FileSystem 对象。写法有三种可能，逐个试，结果记入 log。 */
-async function DSH_fs(log) {
-    var cands = [
-        ['Application.FileSystem', async function () {
-            return (typeof Application !== 'undefined' && Application) ? await DSH_R(Application.FileSystem) : null;
-        }],
-        ['wps.FileSystem', async function () {
-            return (typeof wps !== 'undefined' && wps) ? await DSH_R(wps.FileSystem) : null;
-        }],
-        ['app.FileSystem', async function () {
-            var a = await DSH_getApp([]);
-            return a ? await DSH_P(a, 'FileSystem') : null;
-        }]
-    ];
-    for (var i = 0; i < cands.length; i++) {
-        try {
-            var f = await cands[i][1]();
-            if (!f) { if (log) log.push('FileSystem[' + cands[i][0] + '] 取不到'); continue; }
-            var has = false;
-            try { has = (typeof f.writeFileString === 'function'); } catch (e) { has = false; }
-            if (log) log.push('FileSystem[' + cands[i][0] + '] 取到了，writeFileString=' + has);
-            if (has) return f;
-        } catch (e) {
-            if (log) log.push('FileSystem[' + cands[i][0] + '] 抛错: ' + (e && e.message ? e.message : e));
-        }
-    }
-    return null;
-}
-
-/* 下载新版并覆盖安装。返回 true 表示四个文件都已写入。
-   失败时：手动模式（用户在界面上点的）弹窗说明；自动模式静默。 */
-async function DSH_autoUpdate(L, manual) {
-    var log = [];
-    var base = String(L.base || '');
-    if (!base) {
-        if (manual) DSH_say('版本清单里没写 base（自动更新的文件目录），无法自动更新。');
-        return false;
-    }
-    if (base.charAt(base.length - 1) !== '/') base += '/';
-
+async function DSH_launchUpdater() {
     var dir = DSH_installDir();
-    if (!dir) {
-        if (manual) DSH_say('取不到加载项安装目录，无法自动更新。\n\nlocation:\n' + window.location.href);
-        return false;
-    }
-    log.push('安装目录 ' + dir);
+    if (!dir) return { ok: false, log: '取不到安装目录（location=' + window.location.href + '）' };
+    if (!/^[A-Za-z]:\\/.test(dir)) return { ok: false, log: '安装目录不是 Windows 路径：' + dir };
+    var script = dir + 'updater.ps1';
 
-    var fs = await DSH_fs(log);
-    if (!fs) {
-        DSH_quiet('自动更新中止：没有可写的 FileSystem | ' + log.join(' | '));
-        if (manual) DSH_say('WPS 没有暴露可写的 FileSystem，无法自动更新。\n\n探测过程：\n' + log.join('\n'));
-        return false;
+    var log = ['脚本=' + script];
+    var OA = null;
+    try { if (typeof wps !== 'undefined' && wps) OA = wps.OAAssist; } catch (e) { }
+    if (!OA) { try { if (typeof OAAssist !== 'undefined') OA = OAAssist; } catch (e) { } }
+    if (!OA) return { ok: false, log: log.concat('本 WPS 没暴露 OAAssist（不支持启动外部程序）').join(' | ') };
+    log.push('OAAssist 可取到');
+    if (typeof OA.ShellExecute !== 'function') {
+        return { ok: false, log: log.concat('OAAssist 上没有 ShellExecute 方法').join(' | ') };
     }
 
-    /* ① 全部下载到内存 —— 这一步没全过，就不碰任何现有文件 */
-    var got = {};
-    for (var i = 0; i < DSH_UPDATE_FILES.length; i++) {
-        var f = DSH_UPDATE_FILES[i];
-        var u = base + f + '?_t=' + (new Date()).getTime();
+    var exe  = 'powershell.exe';
+    var args = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + script + '"';
+    var tries = [
+        ['ShellExecute(exe,args,dir,0)', exe, args, dir, 0],
+        ['ShellExecute(exe,args,dir,1)', exe, args, dir, 1],
+        ['ShellExecute(整条命令,"",dir,0)', exe + ' ' + args, '', dir, 0],
+        ['ShellExecute(script,"")', script, ''],
+        ['ShellExecute(script)', script]
+    ];
+    for (var k = 0; k < tries.length; k++) {
         try {
-            var resp = await fetch(u, { cache: 'no-store' });
-            if (!resp || !resp.ok) {
-                var code = resp ? resp.status : '?';
-                DSH_quiet('自动更新中止：' + f + ' HTTP ' + code);
-                if (manual) DSH_say('下载失败：' + f + ' → HTTP ' + code + '\n\n' + u);
-                return false;
-            }
-            var txt = await resp.text();
-            if (!txt || txt.length < 20) {
-                DSH_quiet('自动更新中止：' + f + ' 内容异常');
-                if (manual) DSH_say('下载内容异常（太短或为空）：' + f + '\n\n' + u);
-                return false;
-            }
-            got[f] = txt;
-            log.push(f + ' 已下载 ' + txt.length + ' 字符');
+            var r = await DSH_R(OA.ShellExecute(tries[k][1], tries[k][2], tries[k][3], tries[k][4]));
+            log.push(tries[k][0] + ' 已调用，返回=' + (r === undefined ? 'undefined' : String(r)));
+            return { ok: true, log: log.join(' | ') };
         } catch (e) {
-            var m = (e && e.message) ? e.message : String(e);
-            DSH_quiet('自动更新中止：' + f + ' 下载抛错 ' + m);
-            if (manual) DSH_say('下载 ' + f + ' 失败：\n' + m + '\n\n' + u);
-            return false;
+            log.push(tries[k][0] + ' 抛错: ' + (e && e.message ? e.message : e));
         }
     }
-
-    /* ② 四个文件都拿到了，才开始写 */
-    var written = 0;
-    for (var j = 0; j < DSH_UPDATE_FILES.length; j++) {
-        var g = DSH_UPDATE_FILES[j];
-        try {
-            await DSH_R(fs.writeFileString(dir + g, got[g]));
-            written++;
-            log.push('已写入 ' + g);
-        } catch (e) {
-            var m2 = (e && e.message) ? e.message : String(e);
-            DSH_quiet('自动更新写盘失败：' + g + ' ' + m2);
-            if (manual) {
-                DSH_say('写入 ' + g + ' 失败：\n' + m2 + '\n\n' +
-                        '已写入 ' + written + ' 个文件。\n' +
-                        '若插件表现异常，重新跑一次安装包即可恢复。');
-            }
-            return false;
-        }
-    }
-
-    DSH_quiet('自动更新完成 ' + DSH_VERSION + ' -> ' + L.version + ' | ' + log.join(' | '));
-    return true;
+    return { ok: false, log: log.join(' | ') };
 }
 
-/* 发现新版本后的处置：先试自动安装，装不了再退回"告诉你下载地址"。 */
+/* 发现新版本后的处置：先试拉起更新器；起不来再退回"告诉你下载地址"。 */
 async function DSH_onNewVersion(L, manual) {
-    if (DSH_OPTIONS.autoInstall) {
-        var ok = await DSH_autoUpdate(L, manual);
-        if (ok) {
-            DSH_say('已自动更新到 ' + L.version + '\n\n' +
-                    '当前运行中：' + DSH_VERSION + '\n' +
-                    '完全退出 WPS 再打开即可生效。' +
-                    (L.note ? '\n\n本次更新：\n' + L.note : ''));
+    if (DSH_OPTIONS.useUpdater) {
+        var r = await DSH_launchUpdater();
+        DSH_quiet('拉起更新器 ' + (r.ok ? '已发出' : '失败') + ' | ' + r.log);
+        if (r.ok) {
+            DSH_say('发现新版本 ' + L.version + '（当前 ' + DSH_VERSION + '）\n\n' +
+                    '更新器已在后台运行，几秒后完成。\n' +
+                    '完成后【完全退出 WPS 再打开】即可生效。\n\n' +
+                    '验证：等十几秒再点一次「检查更新」，' +
+                    '若显示"已是最新版本"就说明更新成功了。');
             return;
         }
-        if (!manual) return;          // 自动模式失败 = 静默，旧版照常用
-        DSH_notifyUpdate(L, true);    // 手动模式已报过原因，这里补上手动的下载方式
+        if (!manual) return;                      // 自动模式下失败 = 静默
+        DSH_say('发现新版本 ' + L.version + '，但自动更新器启动失败。\n\n' +
+                '诊断：\n' + r.log + '\n\n' +
+                '常见原因：WPS 的「沙箱保护」拦截了外部程序调用。\n' +
+                '可在 WPS 设置中心 → 安全 里查看该开关。');
+        DSH_notifyUpdate(L, true);
         return;
     }
     DSH_notifyUpdate(L, false);
 }
-
 var DSH_UPDATE_URL = (typeof DSH_UPDATE_URL === 'string') ? DSH_UPDATE_URL : '';
 var DSH_UPDATE_STATE = { done: false, notified: false };
 
