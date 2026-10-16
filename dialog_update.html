@@ -50,9 +50,10 @@
     更新会下载新版本并自动替换插件文件。<br>
     若系统弹出「已拦截 / 是否允许」提示，<b>请选择【放行】或【允许】</b>，否则更新无法完成。
   </div>
+  <!-- 按钮顺序按用户要求：【是】在左，【否】在右 -->
   <div class="btns">
-    <button id="no">否</button>
     <button id="yes" class="primary">是</button>
+    <button id="no">否</button>
   </div>
 </div>
 
@@ -160,13 +161,20 @@
       var dir = q('dir');
       var bat = dir + 'update.bat';
       if (OA && typeof OA.ShellExecute === 'function') {
-        try { OA.ShellExecute(bat); launched = true; }
-        catch (e1) {
-          try { OA.ShellExecute(bat, ''); launched = true; }
-          catch (e2) {
-            try { OA.ShellExecute('cmd.exe', '/c "' + bat + '"'); launched = true; }
-            catch (e3) { launchErr = (e3 && e3.message) ? e3.message : String(e3); }
-          }
+        /* 顺序有讲究：
+           ① 先试自定义 URL 协议 —— WPS 的沙箱拦的是"执行程序"，
+              而"打开一个地址"是 OAAssist 的本职用途，有不被拦的可能。
+           ② 再试直接打开 update.bat（沙箱关掉时这条能成，已实测）。
+           ③ 最后试 cmd.exe /c。 */
+        var tries = [
+          function () { OA.ShellExecute('bianjie-update://run'); },
+          function () { OA.ShellExecute(bat); },
+          function () { OA.ShellExecute(bat, ''); },
+          function () { OA.ShellExecute('cmd.exe', '/c "' + bat + '"'); }
+        ];
+        for (var ti = 0; ti < tries.length; ti++) {
+          try { tries[ti](); launched = true; break; }
+          catch (et) { launchErr = (et && et.message) ? et.message : String(et); }
         }
       } else { launchErr = '本 WPS 未提供 OAAssist'; }
     } catch (e) { launchErr = (e && e.message) ? e.message : String(e); }
