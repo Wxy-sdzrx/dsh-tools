@@ -226,12 +226,17 @@
            ③ update.bat 兜底 —— 会闪一下黑色命令行窗口 */
         var ps = 'powershell.exe';
         var psArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + dir + 'updater.ps1"';
+        var vbs = dir + 'update.vbs';
+        /* 为什么 vbs 排第一：它由 wscript.exe 跑，【根本不创建控制台窗口】；
+           .bat 由 cmd.exe 跑，一定有个黑框（实测会闪一下）。
+           实测：ShellExecute(ps, psArgs) 和 ShellExecute 传 URL 协议在 WPS 里都抛错 ——
+           所以【只给一个文件路径】是唯一能用的形式。 */
         var tries = [
+          function () { OA.ShellExecute(vbs); },
           function () { OA.ShellExecute(ps, psArgs); },
           function () { OA.ShellExecute('bianjie-update://run'); },
           function () { OA.ShellExecute(bat); },
-          function () { OA.ShellExecute(bat, ''); },
-          function () { OA.ShellExecute('cmd.exe', '/c "' + bat + '"'); }
+          function () { OA.ShellExecute(bat, ''); }
         ];
         for (var ti = 0; ti < tries.length; ti++) {
           try { tries[ti](); launched = true; break; }
