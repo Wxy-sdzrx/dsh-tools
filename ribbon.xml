@@ -43,9 +43,10 @@
         </group>
         <group id="dshDiagGroup" label="诊断">
           <button id="dshBtnCheckUpdate" label="检查更新"
+                  getLabel="dshCheckUpdateLabel"
                   onAction="dshCheckUpdate"
                   screentip="看看有没有新版本"
-                  supertip="读取版本清单（放在 WPS 云盘共享文件夹里），比当前版本高就提示下载新安装包。读不到不影响插件使用。" />
+                  supertip="读过版本清单，比当前版本高就自动下载升级。按钮上显示当前版本号；升级时 WPS 会弹安全确认框，请点【是】。" />
           <button id="dshBtnDiag" label="自检"
                   onAction="dshDiagnose"
                   screentip="报告运行明细"

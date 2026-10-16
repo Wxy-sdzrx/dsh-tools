@@ -24,6 +24,37 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $Here = $PSScriptRoot
 function Say($m) { if ($Show) { Write-Host ('[updater] ' + $m) } }
 
+# 网络必须重试。实测：在装了零信任客户端的机器上，github.io 会【偶发】
+# 报「基础连接已经关闭: 发送时发生错误」，连打 12 次里 0 次失败，
+# 但一天里总会碰上几次。一次抖动就放弃 = 自动更新等于没做。
+# 写一个给插件读的结果文件。
+# 为什么需要它：插件【读不了文件】—— WPS 的 FileSystem 只认裸文件名、
+# 写到浏览器缓存目录；fetch 也读不了 file://。
+# 唯一的回传通道就是【同目录下再注入一个 <script src>】。
+# 所以更新器把结果写成 update-status.js，插件注入它就能知道成没成。
+function Write-Status($ok, $from, $to, $msg) {
+    try {
+        $o = 'var DSH_UPDATE_RESULT = {"ok":' + $(if ($ok) { 'true' } else { 'false' }) +
+             ',"from":"' + $from + '","to":"' + $to + '","ts":' + ([long](Get-Date -UFormat %s) * 1000) +
+             ',"msg":"' + ($msg -replace '"', '') + '"};' + "`n"
+        [System.IO.File]::WriteAllText((Join-Path $Here 'update-status.js'), $o, (New-Object System.Text.UTF8Encoding($false)))
+    } catch { }
+}
+function Get-Text($url) {
+    for ($k = 1; $k -le 4; $k++) {
+        try { return (Invoke-WebRequest -Uri $url -TimeoutSec 25 -UseBasicParsing -ErrorAction Stop).Content }
+        catch { Say ('  取清单第 ' + $k + ' 次失败: ' + $_.Exception.Message); if ($k -lt 4) { Start-Sleep -Milliseconds (500 * $k) } }
+    }
+    return $null
+}
+function Get-File($url, $dst) {
+    for ($k = 1; $k -le 4; $k++) {
+        try { Invoke-WebRequest -Uri $url -OutFile $dst -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop; return $true }
+        catch { Say ('  ' + (Split-Path $dst -Leaf) + ' 第 ' + $k + ' 次下载失败: ' + $_.Exception.Message); if ($k -lt 4) { Start-Sleep -Milliseconds (500 * $k) } }
+    }
+    return $false
+}
+
 # ---------- ① 更新地址：优先 dsh-config.js，退回 update-url.txt ----------
 $manifestUrl = ''
 $cfg = Join-Path $Here 'dsh-config.js'
@@ -52,10 +83,8 @@ if (-not $localVer) { Say '读不到本地版本号，退出'; exit 0 }
 
 # ---------- ③ 取清单 ----------
 $sep = if ($manifestUrl.Contains('?')) { '&' } else { '?' }
-try {
-    $resp = Invoke-WebRequest -Uri ($manifestUrl + $sep + '_t=' + (Get-Random)) -TimeoutSec 25 -UseBasicParsing -ErrorAction Stop
-    $txt = $resp.Content
-} catch { Say ('取清单失败: ' + $_.Exception.Message); exit 0 }
+$txt = Get-Text ($manifestUrl + $sep + '_t=' + (Get-Random))
+if (-not $txt) { Say '取清单失败（已重试 4 次），退出'; exit 0 }
 
 $remoteVer = ([regex]::Match($txt, "version:\s*'([^']+)'")).Groups[1].Value
 $base      = ([regex]::Match($txt, "base:\s*'([^']*)'")).Groups[1].Value
@@ -83,37 +112,50 @@ function CmpVer([string]$a, [string]$b) {
 }
 
 Say ('本地 ' + $localVer + '  远程 ' + $remoteVer)
-if ((CmpVer $remoteVer $localVer) -le 0) { Say '已是最新，无事可做'; exit 0 }
+if ((CmpVer $remoteVer $localVer) -le 0) {
+    Write-Status $true $localVer $remoteVer '无需更新（已是最新）'
+    Say '已是最新，无事可做'
+    exit 0
+}
 
-# ---------- ④ 全部下载到内存 ----------
-$got = @{}
+# ---------- ④ 全部下载到【临时目录】 ----------
+# 为什么落临时目录、而不是读进内存再按字符串写：
+#   GitHub Pages 不认识 .ps1，会用 application/octet-stream 返回。
+#   这时 Invoke-WebRequest 的 .Content 是【字节数组】而不是字符串，
+#   按字符串写出去会把文件写坏（实测：.Content.Trim() 直接报
+#   「[System.Byte] 不包含名为 Trim 的方法」）。
+#   先落盘、再 Copy-Item 是【字节级】的，任何类型都不会出错。
+$tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ('dsh_upd_' + (Get-Random))
+New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+function Cleanup { Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
+
 foreach ($f in $files) {
     $u = $base + $f + '?_t=' + (Get-Random)
-    try {
-        $fr = Invoke-WebRequest -Uri $u -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
-        $c = $fr.Content
-        if (-not $c -or $c.Length -lt 20) { Say ($f + ' 内容异常（太短），中止'); exit 0 }
-        $got[$f] = $c
-        Say ($f + ' 已下载 ' + $c.Length + ' 字符')
-    } catch {
-        Say ($f + ' 下载失败，中止（一个文件都没写）: ' + $_.Exception.Message)
-        exit 0
+    $dst = Join-Path $tmpDir $f
+    if (-not (Get-File $u $dst)) {
+        Say ($f + ' 下载失败（已重试 4 次），中止 —— 一个文件都没写')
+        Cleanup; exit 0
     }
+    $sz = (Get-Item $dst).Length
+    if ($sz -lt 20) { Say ($f + ' 内容异常（' + $sz + ' 字节），中止'); Cleanup; exit 0 }
+    Say ($f + ' 已下载 ' + $sz + ' 字节')
 }
 
-# ---------- ⑤ 四个都拿到了，才开始写 ----------
-$utf8 = New-Object System.Text.UTF8Encoding($false)
+# ---------- ⑤ 全部拿到了，才逐个覆盖 ----------
 foreach ($f in $files) {
+    $src    = Join-Path $tmpDir $f
     $target = Join-Path $Here $f
     try {
-        [System.IO.File]::WriteAllText($target, $got[$f], $utf8)
-        Say ($f + ' 已写入')
+        Copy-Item $src $target -Force
+        Say ($f + ' 已覆盖')
     } catch {
         # updater.ps1 可能被自己锁住 —— 那不算失败：其余文件都已更新成功。
-        if ($f -eq 'updater.ps1') { Say 'updater.ps1 自身写入被占用，跳过（不影响本次更新）'; continue }
+        if ($f -eq 'updater.ps1') { Say 'updater.ps1 自身被占用，跳过（不影响本次更新）'; continue }
         Say ($f + ' 写入失败: ' + $_.Exception.Message)
-        exit 1
+        Cleanup; exit 1
     }
 }
+Cleanup
+Write-Status $true $localVer $remoteVer '更新完成'
 Say ('更新完成 ' + $localVer + ' -> ' + $remoteVer)
 exit 0

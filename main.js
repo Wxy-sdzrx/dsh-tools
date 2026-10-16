@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.6.1';
+var DSH_VERSION = '1.7.0';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -952,16 +952,34 @@ async function DSH_launchUpdater() {
 
     var exe  = 'powershell.exe';
     var args = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + script + '"';
+
+    /* ⚠️⚠️ 必须按【准确的实参个数】调用，不能用 undefined 占位。
+       上一版把四种写法统一写成传 4 个参数（多余的补 undefined），
+       JS 仍然按 4 个实参算 —— 结果每种写法都报 "Too many parameters"，
+       连"只传 1 个参数"那种也不例外，把真正的签名完全遮住了。
+       这个结论是插件的诊断信息直接给出的，不是猜的。 */
+    /* 官方签名（open.wps.cn → JSAPI → OAAssist → ShellExecute）：
+         express.ShellExecute(Url, Params)
+           Url    可选 String  网页或进程的地址
+           Params 可选 String  启动参数
+         文档原话：「当不传入参数时，该函数立即返回。」
+         —— 所以「调用没报错」绝不等于「程序被执行了」，别把不抛错当成功。 */
+    var bat = dir + 'update.bat';
     var tries = [
-        ['ShellExecute(exe,args,dir,0)', exe, args, dir, 0],
-        ['ShellExecute(exe,args,dir,1)', exe, args, dir, 1],
-        ['ShellExecute(整条命令,"",dir,0)', exe + ' ' + args, '', dir, 0],
-        ['ShellExecute(script,"")', script, ''],
-        ['ShellExecute(script)', script]
+        /* ① 「只打开一个文件、不给任何参数」—— ShellExecute 的本职用法。
+           实测教训：传 ('powershell.exe', '参数串') 时，调用不报错、
+           WPS 也照样弹安全确认框，但【参数根本没被用上】——
+           文件系统证据是版本没变、更新器的临时目录也没建。
+           所以参数这条路先放弃，改成一个自包含的 .bat（它用 %~dp0 自己找路径）。 */
+        ['ShellExecute(update.bat)',         function () { return OA.ShellExecute(bat); }],
+        ['ShellExecute(update.bat,"")',      function () { return OA.ShellExecute(bat, ''); }],
+        ['ShellExecute(cmd.exe,/c bat)',     function () { return OA.ShellExecute('cmd.exe', '/c "' + bat + '"'); }],
+        ['ShellExecute(cmd.exe,/c bat,dir)', function () { return OA.ShellExecute('cmd.exe', '/c "' + bat + '"', dir); }],
+        ['ShellExecute(powershell,args)',    function () { return OA.ShellExecute(exe, args); }]
     ];
     for (var k = 0; k < tries.length; k++) {
         try {
-            var r = await DSH_R(OA.ShellExecute(tries[k][1], tries[k][2], tries[k][3], tries[k][4]));
+            var r = await DSH_R(tries[k][1]());
             log.push(tries[k][0] + ' 已调用，返回=' + (r === undefined ? 'undefined' : String(r)));
             return { ok: true, log: log.join(' | ') };
         } catch (e) {
@@ -971,20 +989,73 @@ async function DSH_launchUpdater() {
     return { ok: false, log: log.join(' | ') };
 }
 
+/* ---------- 按钮上显示当前版本号 ----------
+   同时保留 ribbon.xml 里的静态 label：万一某个 WPS 版本不认 getLabel，
+   按钮也不会变成空白（已验证过一次 menu 的 getLabel 在 WPS 里不刷新，
+   所以这里两条腿走路）。 */
+function dshCheckUpdateLabel() {
+    return '检查更新 (' + DSH_VERSION + ')';
+}
+
+/* ---------- 读回更新结果 ----------
+   更新器跑完会把结果写进【同一个加载项目录】的 update-status.js。
+   插件用 <script src> 把它读回来 —— 这是唯一的回传通道：
+     · WPS 的 FileSystem 只能写裸文件名到浏览器缓存目录，读不了任意路径；
+     · fetch 也读不了 file://。
+   所以「注入一个本地脚本」是唯一能让插件知道"更新成没成"的办法。 */
+function DSH_pollUpdateResult(sinceTs, left, cb) {
+    var old = document.getElementById('dshUpdStatus');
+    if (old) { try { old.parentNode.removeChild(old); } catch (e) { } }
+    var s = document.createElement('script');
+    s.id = 'dshUpdStatus';
+    s.src = 'update-status.js?_t=' + (new Date()).getTime();
+    var retry = function () {
+        if (left > 0) { setTimeout(function () { DSH_pollUpdateResult(sinceTs, left - 1, cb); }, 2000); }
+        else { cb(null); }
+    };
+    s.onload = function () {
+        try {
+            var R = window.DSH_UPDATE_RESULT;
+            if (R && R.ts && R.ts >= sinceTs) { cb(R); return; }
+        } catch (e) { }
+        retry();                                  // 读到的是上一次的旧结果，继续等
+    };
+    s.onerror = function () { retry(); };         // 文件还没生成出来，继续等
+    try { document.head.appendChild(s); } catch (e) { cb(null); }
+}
+
 /* 发现新版本后的处置：先试拉起更新器；起不来再退回"告诉你下载地址"。 */
 async function DSH_onNewVersion(L, manual) {
     if (DSH_OPTIONS.useUpdater) {
         var r = await DSH_launchUpdater();
         DSH_quiet('拉起更新器 ' + (r.ok ? '已发出' : '失败') + ' | ' + r.log);
         if (r.ok) {
-            DSH_say('发现新版本 ' + L.version + '（当前 ' + DSH_VERSION + '）\n\n' +
-                    '更新器已在后台运行，几秒后完成。\n' +
-                    '完成后【完全退出 WPS 再打开】即可生效。\n\n' +
-                    '验证：等十几秒再点一次「检查更新」，' +
-                    '若显示"已是最新版本"就说明更新成功了。');
+            /* 不急着报「已启动」—— 等更新器把结果写出来再报。
+               否则就会出现「说启动了、其实根本没跑」的假成功（上一版正是如此）。
+               容忍 5 秒时钟误差，避免读到上一次的旧结果。 */
+            var t0 = (new Date()).getTime() - 5000;
+            DSH_pollUpdateResult(t0, 10, function (R) {
+                if (!R) {
+                    DSH_say('已请求自动更新，但没能确认结果。\n\n' +
+                            '最可能的原因：WPS 弹出的安全确认框没有点【是】。\n' +
+                            '（那个框是 WPS 的自我保护，每次都会问，必须点「是」。）\n\n' +
+                            '也可以等一会儿重新点「检查更新」，或手动下载安装包。');
+                    return;
+                }
+                if (R.ok) {
+                    DSH_say('★ 更新成功\n\n' +
+                            '已从 ' + R.from + ' 更新到 ' + R.to + '。\n' +
+                            '【完全退出 WPS 再打开】即可生效。');
+                } else {
+                    DSH_say('自动更新未成功。\n\n' +
+                            '当前 ' + DSH_VERSION + '，目标 ' + R.to + '\n' +
+                            '原因：' + (R.msg || '未知') + '\n\n' +
+                            '可以再点一次「检查更新」，或手动下载安装包。');
+                }
+            });
             return;
         }
-        if (!manual) return;                      // 自动模式下失败 = 静默
+if (!manual) return;                      // 自动模式下失败 = 静默
         DSH_say('发现新版本 ' + L.version + '，但自动更新器启动失败。\n\n' +
                 '诊断：\n' + r.log + '\n\n' +
                 '常见原因：WPS 的「沙箱保护」拦截了外部程序调用。\n' +
@@ -997,7 +1068,7 @@ async function DSH_onNewVersion(L, manual) {
 var DSH_UPDATE_URL = (typeof DSH_UPDATE_URL === 'string') ? DSH_UPDATE_URL : '';
 var DSH_UPDATE_STATE = { done: false, notified: false };
 
-function DSH_checkUpdate(manual) {
+function DSH_checkUpdate(manual, attempt) {
     var url = DSH_UPDATE_URL;
     if (!url) {
         if (manual) {
@@ -1007,7 +1078,7 @@ function DSH_checkUpdate(manual) {
         }
         return;
     }
-    if (DSH_UPDATE_STATE.done && !manual) return;
+    if (DSH_UPDATE_STATE.done && !manual && !attempt) return;
     DSH_UPDATE_STATE.done = true;
 
     var old = document.getElementById('dshUpdateProbe');
@@ -1038,7 +1109,16 @@ function DSH_checkUpdate(manual) {
         }
     };
     s.onerror = function () {
-        if (manual) DSH_say('读不到版本清单：\n' + url + '\n\n（不影响插件使用）');
+        /* 网络偶发抖动是常态：实测 github.io 连打 12 次全过，
+           但一天里总会碰上几次「基础连接已经关闭」。所以自动重试两次。
+           失败也只影响"这次不提示更新"，五个功能完全不受影响。 */
+        var att = attempt || 0;
+        if (att < 2) {
+            setTimeout(function () { DSH_checkUpdate(manual, att + 1); }, 1500 * (att + 1));
+            return;
+        }
+        DSH_quiet('读不到版本清单（已重试 2 次）：' + url);
+        if (manual) DSH_say('读不到版本清单：\n' + url + '\n\n（已重试 2 次。不影响插件使用）');
     };
     try { document.head.appendChild(s); } catch (e) { }
 }
@@ -1120,6 +1200,7 @@ try {
         window.dshSumRegion = dshSumRegion;
         window.dshRibbonLoad = dshRibbonLoad;
         window.dshCheckUpdate = dshCheckUpdate;
+        window.dshCheckUpdateLabel = dshCheckUpdateLabel;
         window.dshSeqMenuLabel = dshSeqMenuLabel;
         window.dshSeqPick0 = dshSeqPick0;
         window.dshSeqPick1 = dshSeqPick1;
