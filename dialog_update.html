@@ -218,11 +218,16 @@
       var OA = (window.wps && wps.OAAssist) ? wps.OAAssist : null;
       var bat = dir + 'update.bat';
       if (OA && typeof OA.ShellExecute === 'function') {
-        /* 顺序有讲究：
-           ① 先试自定义 URL 协议（"打开地址"是 OAAssist 的本职用途）
-           ② 再试直接打开 update.bat（沙箱关掉时这条能成，已实测）
-           ③ 最后 cmd.exe /c */
+        /* 顺序有讲究（都是实测出来的）：
+           ① 优先 powershell.exe + -WindowStyle Hidden —— 【不会弹黑色命令行窗口】。
+              注：这条路早期测过并判定"参数传不进去"，但那是在沙箱还开着的时候测的；
+              沙箱会拦掉全部 ShellExecute，所以那个结论是错的。沙箱关掉后它才是首选。
+           ② 自定义 URL 协议（"打开地址"是 OAAssist 的本职用途）
+           ③ update.bat 兜底 —— 会闪一下黑色命令行窗口 */
+        var ps = 'powershell.exe';
+        var psArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + dir + 'updater.ps1"';
         var tries = [
+          function () { OA.ShellExecute(ps, psArgs); },
           function () { OA.ShellExecute('bianjie-update://run'); },
           function () { OA.ShellExecute(bat); },
           function () { OA.ShellExecute(bat, ''); },
