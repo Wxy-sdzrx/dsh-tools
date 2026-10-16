@@ -1,4 +1,4 @@
-/* ============================================================
+﻿/* ============================================================
  * 便捷插件 · WPS 文字加载项   （根目录入口脚本）
  * 千分符 / 乘以一万 / 除以一万
  * ------------------------------------------------------------
@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.8.8';
+var DSH_VERSION = '1.9.0';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -972,13 +972,13 @@ function DSH_showUpdateDialog(L, manual) {
     try { dpr = window.devicePixelRatio || 1; } catch (e) { }
     try {
         if (window.wps && typeof wps.ShowDialog === 'function') {
-            wps.ShowDialog(url, '检查更新', Math.round(430 * dpr), Math.round(310 * dpr), true);
+            wps.ShowDialog(url, '检查更新', Math.round(392 * dpr), Math.round(286 * dpr), true);
             return true;
         }
     } catch (e) { }
     try {
         if (window.wps && wps.Dialog && typeof wps.Dialog.openDialog === 'function') {
-            wps.Dialog.openDialog({ title: '检查更新', width: 430, height: 310, url: url });
+            wps.Dialog.openDialog({ title: '检查更新', width: 392, height: 286, url: url });
             return true;
         }
     } catch (e) { }

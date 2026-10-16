@@ -193,7 +193,13 @@ foreach ($f in $files) {
         Write-Status -State 'installing' -From $localVer -To $remoteVer -Done $j -Total $files.Count -File $f -Msg '正在写入'
         Say ($f + ' 已覆盖')
     } catch {
-        if ($f -eq 'updater.ps1') { Say 'updater.ps1 自身被占用，跳过（不影响本次更新）'; continue }
+        # 这三个文件在更新时【可能正被占用】：
+        #   updater.ps1  —— 就是我自己在跑；
+        #   update.bat / update.vbs —— 刚把活儿交给我们的启动器，可能还没完全退出。
+        # 被占用不算失败：其余文件都已经更新成功了，下次更新它们还有机会。
+        if ($f -eq 'updater.ps1' -or $f -eq 'update.bat' -or $f -eq 'update.vbs') {
+            Say ($f + ' 被占用，跳过（不影响本次更新）'); continue
+        }
         Write-Status -State 'error' -From $localVer -To $remoteVer -Done $j -Total $files.Count -File $f -Msg ('写入失败：' + $f)
         Say ($f + ' 写入失败: ' + $_.Exception.Message)
         Cleanup; exit 1
