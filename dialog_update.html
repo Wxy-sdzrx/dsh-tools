@@ -48,6 +48,7 @@
   .list .c { color:#111; font-weight:600; }
   .warn { color:#8a5a00; background:#fff8e6; border:1px solid #f0dca8; border-radius:3px;
           padding:5px 8px; margin-top:7px; line-height:1.45; font-size:11.5px; }
+  .hintclose { color:#999; font-size:11.5px; padding-top:12px; }
   .url { width:100%; box-sizing:border-box; font-family:Consolas,monospace; font-size:11.5px;
          padding:5px 7px; border:1px solid #c2c2c2; border-radius:3px; margin-top:8px; }
 </style>
@@ -113,6 +114,30 @@
   <div class="ft"><button id="ok4" class="primary">确定</button></div>
 </div>
 
+<!-- 已是最新 -->
+<div id="uptodate" class="page">
+  <div class="scroll">
+    <div class="hd ok">★ 已是最新版本</div>
+    <div class="ver">当前版本 <b class="new" id="cur2">—</b>　无需更新。</div>
+    <div class="hintclose">（点任意处关闭）</div>
+  </div>
+</div>
+
+<!-- 读不到版本清单 -->
+<div id="netfail" class="page">
+  <div class="scroll">
+    <div class="hd">读不到版本清单</div>
+    <div class="ver" style="font-size:11.5px;line-height:1.6">
+      地址：<span id="failUrl" style="font-family:Consolas,monospace;word-break:break-all">—</span>
+    </div>
+    <div class="warn" style="margin-top:0">
+      可能是网络一时不通（已自动重试 2 次）。<br>
+      <b>不影响插件的任何功能</b>，稍后再点一次即可。
+    </div>
+    <div class="hintclose">（点任意处关闭）</div>
+  </div>
+</div>
+
 <!-- 已排队 -->
 <div id="err" class="page">
   <div class="scroll">
@@ -136,7 +161,7 @@
     } catch (e) { return ''; }
   }
   function show(id) {
-    var ids = ['ask', 'work', 'done', 'link', 'err'];
+    var ids = ['ask', 'work', 'done', 'link', 'err', 'uptodate', 'netfail'];
     for (var i = 0; i < ids.length; i++) {
       var el = document.getElementById(ids[i]);
       if (ids[i] === id) { el.className = 'page on'; } else { el.className = 'page'; }
@@ -156,6 +181,14 @@
   var noteEl = document.getElementById('note');
   if (note) { noteEl.textContent = '更新内容： ' + note; } else { noteEl.style.display = 'none'; }
   if (q('mode') === 'auto') { document.getElementById('autoTip').style.display = ''; }
+  document.getElementById('cur2').textContent = curV || '—';
+  document.getElementById('failUrl').textContent = q('failurl') || '—';
+  /* view 参数：不进"是否更新"页，直接显示结果页。
+     为什么把这些提示也搬进对话框：WPS 的原生 alert 没法调比例，一张大框配两行字很丑；
+     放进这里就能和更新对话框共用同一套版式和尺寸。 */
+  var view = q('view');
+  if (view === 'uptodate') { show('uptodate'); }
+  else if (view === 'netfail') { show('netfail'); }
   document.getElementById('urlBox').value = dlUrl;
 
   function copyLink() {
@@ -289,6 +322,8 @@
   document.getElementById('ok2').onclick = closeMe;
   document.getElementById('ok3').onclick = closeMe;
   document.getElementById('ok4').onclick = closeMe;
+  document.getElementById('uptodate').onclick = closeMe;
+  document.getElementById('netfail').onclick  = closeMe;
 })();
 </script>
 </body>

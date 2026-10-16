@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.9.2';
+var DSH_VERSION = '1.9.3';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -985,6 +985,27 @@ function DSH_showUpdateDialog(L, manual) {
     return false;
 }
 
+/* 只显示结果、不做动作的提示框（已是最新 / 读不到清单）。
+   和更新对话框共用同一个页面与尺寸，外观统一。 */
+function DSH_showResultDialog(view, L, failUrl) {
+    var base = DSH_baseUrl();
+    if (!base) return false;
+    var url = base + 'dialog_update.html' +
+              '?view=' + encodeURIComponent(view) +
+              '&cur='  + encodeURIComponent(DSH_VERSION) +
+              '&new='  + encodeURIComponent(String((L && L.version) || '')) +
+              '&failurl=' + encodeURIComponent(String(failUrl || ''));
+    var dpr = 1;
+    try { dpr = window.devicePixelRatio || 1; } catch (e) { }
+    try {
+        if (window.wps && typeof wps.ShowDialog === 'function') {
+            wps.ShowDialog(url, '检查更新', Math.round(424 * dpr), Math.round(300 * dpr), true);
+            return true;
+        }
+    } catch (e) { }
+    return false;
+}
+
 /* 发现新版本后的处置 —— 【只有手动点「检查更新」才弹对话框】。
    启动时的自动检查必须静默：用户明确要求"应该是我点击检查更新后才弹窗"。
    自动更新那条路由开机项负责（登录时跑），不需要在 WPS 启动时打扰用户。
@@ -1031,7 +1052,9 @@ function DSH_checkUpdate(manual, attempt) {
                 return;
             }
             if (DshEngine.cmpVersion(L.version, DSH_VERSION) <= 0) {
-                if (manual) DSH_say('已是最新版本。\n\n当前版本：' + DSH_VERSION);
+                /* 手动检查且已是最新 → 用我们自己的对话框，而不是 WPS 原生 alert
+                   （alert 的比例调不了，一张大框配两行字很丑）。 */
+                if (manual) DSH_showResultDialog('uptodate', L);
                 return;
             }
             if (DSH_UPDATE_STATE.notified && !manual) return;
@@ -1051,7 +1074,7 @@ function DSH_checkUpdate(manual, attempt) {
             return;
         }
         DSH_quiet('读不到版本清单（已重试 2 次）：' + url);
-        if (manual) DSH_say('读不到版本清单：\n' + url + '\n\n（已重试 2 次。不影响插件使用）');
+        if (manual) DSH_showResultDialog('netfail', null, url);
     };
     try { document.head.appendChild(s); } catch (e) { }
 }
