@@ -1,0 +1,57 @@
+﻿<customUI onLoad="dshRibbonLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="dshTab" label="便捷插件">
+        <group id="dshGroup" label="数字工具">
+          <button id="dshBtnThousand" label="千分符"
+                  onAction="dshThousands"
+                  screentip="给数字加千分位分隔符"
+                  supertip="选中区域优先，未选中则处理整篇正文。自动跳过年份、日期、文号、章节号、百分比。" />
+          <button id="dshBtnMul" label="乘以一万"
+                  onAction="dshMultiply"
+                  screentip="所有数字 ×10000"
+                  supertip="把万元口径换成元口径。" />
+          <button id="dshBtnDiv" label="除以一万"
+                  onAction="dshDivide"
+                  screentip="所有数字 ÷10000"
+                  supertip="把元口径换成万元口径。" />
+        </group>
+        <group id="dshSeqGroup" label="序号">
+          <button id="dshBtnSeq" label="填充序号"
+                  onAction="dshFillSequence"
+                  screentip="在表格中从上到下填充序号"
+                  supertip="先在表格中选中一列（或一段连续单元格）。选区里已经有序号的格子不动，只补空白格，并从最后一个序号接着往下排。" />
+          <menu id="dshSeqMenu" label="序号格式"
+                getLabel="dshSeqMenuLabel"
+                screentip="选择填充序号时使用的格式"
+                supertip="点开选择。当前格式会显示在按钮上。">
+            <button id="dshSeqFmt0" label="1   2   3"         onAction="dshSeqPick0" />
+            <button id="dshSeqFmt1" label="01   02   03"      onAction="dshSeqPick1" />
+            <button id="dshSeqFmt2" label="1、  2、  3、"      onAction="dshSeqPick2" />
+            <button id="dshSeqFmt3" label="（1）（2）（3）"    onAction="dshSeqPick3" />
+            <button id="dshSeqFmt4" label="一   二   三"      onAction="dshSeqPick4" />
+            <button id="dshSeqFmt5" label="（一）（二）（三）"  onAction="dshSeqPick5" />
+            <button id="dshSeqFmt6" label="①   ②   ③"        onAction="dshSeqPick6" />
+            <button id="dshSeqFmt7" label="A   B   C"         onAction="dshSeqPick7" />
+          </menu>
+        </group>
+        <group id="dshSumGroup" label="求和">
+          <button id="dshBtnSum" label="区域求和"
+                  onAction="dshSumRegion"
+                  screentip="把选中区域里的数字加起来"
+                  supertip="表格里选一列或一片单元格，或选中一段文字。日期、文号、章节号、百分比、15 位以上长数字串不参与求和。结果是弹窗，可按 Ctrl+C 复制。" />
+        </group>
+        <group id="dshDiagGroup" label="诊断">
+          <button id="dshBtnCheckUpdate" label="检查更新"
+                  onAction="dshCheckUpdate"
+                  screentip="看看有没有新版本"
+                  supertip="读取版本清单（放在 WPS 云盘共享文件夹里），比当前版本高就提示下载新安装包。读不到不影响插件使用。" />
+          <button id="dshBtnDiag" label="自检"
+                  onAction="dshDiagnose"
+                  screentip="报告运行明细"
+                  supertip="不修改文档，只把「是否拿到文档、选区长度、可处理处数、每步成败」列出来，用于排查没反应的问题。" />
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>区域求和</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px; color: #222; background: #fff;
+    padding: 16px 18px; box-sizing: border-box;
+  }
+  .cnt { color: #555; margin-bottom: 8px; }
+  #val {
+    width: 100%; box-sizing: border-box; font-size: 17px; padding: 7px 10px;
+    border: 1px solid #b0b0b0; border-radius: 4px; text-align: right;
+    font-family: Consolas, "Microsoft YaHei UI", monospace;
+    background: #fff;
+  }
+  .hint { margin-top: 9px; color: #777; font-size: 12px; min-height: 16px; }
+  .btns { position: absolute; right: 18px; bottom: 14px; }
+  #ok { padding: 5px 22px; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <div class="cnt">数字个数：<b id="cnt">—</b></div>
+  <input id="val" readonly spellcheck="false">
+  <div class="hint" id="hint"></div>
+  <div class="btns"><button id="ok">确定</button></div>
+
+<script>
+(function () {
+  'use strict';
+
+  function q(name) {
+    try {
+      var m = new RegExp('[?&]' + name + '=([^&]*)').exec(String(location.search || ''));
+      return m ? decodeURIComponent(m[1]) : '';
+    } catch (e) { return ''; }
+  }
+
+  var val = q('sum');
+  var cnt = q('cnt');
+  // URL 没带上就从 PluginStorage 兜（防止某些环境裁剪 query）
+  if (!val) {
+    try { if (window.wps && wps.PluginStorage) { val = wps.PluginStorage.getItem('dshLastSum') || ''; } } catch (e) { }
+  }
+
+  var el = document.getElementById('val');
+  var hint = document.getElementById('hint');
+  el.value = val;
+  document.getElementById('cnt').textContent = cnt || '—';
+
+  function mark(ok) {
+    hint.textContent = ok ? '已复制到剪贴板，直接粘贴即可'
+                          : '自动复制失败，请按 Ctrl+C 复制';
+  }
+
+  window.onload = function () {
+    // 默认选中，供 Ctrl+C
+    try { el.focus(); el.select(); } catch (e) { }
+
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { }
+    if (ok) { mark(true); return; }
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(val).then(
+          function () { mark(true); },
+          function () { mark(false); }
+        );
+        return;
+      }
+    } catch (e) { }
+    mark(false);
+  };
+
+  function closeMe() {
+    // 官方文档没写关闭方法；社区确认对话框页里 window.close() 有效
+    try { if (window.wps && wps.Dialog && wps.Dialog.close) { wps.Dialog.close(); return; } } catch (e) { }
+    try { window.close(); } catch (e) { }
+  }
+
+  document.getElementById('ok').onclick = closeMe;
+  document.onkeydown = function (e) {
+    if (e.keyCode === 13 || e.keyCode === 27) { closeMe(); }   // 回车 / Esc
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,6 +1,16 @@
-<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<title>便捷插件</title></head><body>
-<h3>便捷插件 · 更新源</h3>
-<p>本页仅用于托管插件的版本清单与安装包，无需人工访问。</p>
-<p>最新安装包：<a href="BianjieTools-v1.4.2.zip">BianjieTools-v1.4.2.zip</a></p>
-</body></html>
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>便捷插件</title>
+    <!-- 顺序不能反：
+         1) dsh-config.js —— 安装脚本生成的本地配置（含更新检查地址）。
+            文件不存在时浏览器 404，脚本标签静默失败，页面照常继续，不影响任何功能。
+         2) main.js —— 全部逻辑。功能区回调必须是这个文件里的顶层函数。 -->
+    <script src="dsh-config.js"></script>
+    <script src="main.js"></script>
+</head>
+<body>
+    <p>便捷插件已加载。功能区按钮直接作用于文档，本页面无需交互。</p>
+</body>
+</html>
