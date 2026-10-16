@@ -1,4 +1,4 @@
-﻿/* ============================================================
+/* ============================================================
  * 便捷插件 · WPS 文字加载项   （根目录入口脚本）
  * 千分符 / 乘以一万 / 除以一万
  * ------------------------------------------------------------
@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.8.1';
+var DSH_VERSION = '1.8.2';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -917,8 +917,11 @@ function dshRibbonLoad(ribbon) {
      大地插件就是这么做的（它有个 Updater\UpdaterReset\updater.exe）。
      我们等价地用一个 updater.ps1，完全绕开 WPS 沙箱。
 
-   怎么拉起：wps.OAAssist.ShellExecute。它可能被 WPS「沙箱保护」拦，
-   所以逐个候选写法试；全都失败就退回"给你下载地址"，绝不假装成功。 */
+   谁来拉起：点「检查更新」→ 弹出 dialog_update.html，用户选【是】之后
+   由那个对话框调用 wps.OAAssist.ShellExecute 打开 update.bat。
+   —— 为什么不在这个页面里拉：用户要先看到「当前版本 / 最新版本 / 是否更新」，
+       alert 给不了按钮和进度，所以整段交互都放进对话框页。
+   —— 另外，登录时还有一条 HKCU\Run 兜底，完全不经过 WPS。 */
 
 /* 当前加载项的安装目录（Windows 路径，以反斜杠结尾）。
    从页面 URL 反推，不依赖 FileSystem / Env 之类的 API 是否可用。 */
@@ -932,64 +935,7 @@ function DSH_installDir() {
         if (!m) return '';
         return m[1].replace(/\//g, '\\');                          // C:\...\BianjieTools_1.5.2\
     } catch (e) { return ''; }
-}
-
-async function DSH_launchUpdater() {
-    var dir = DSH_installDir();
-    if (!dir) return { ok: false, log: '取不到安装目录（location=' + window.location.href + '）' };
-    if (!/^[A-Za-z]:\\/.test(dir)) return { ok: false, log: '安装目录不是 Windows 路径：' + dir };
-    var script = dir + 'updater.ps1';
-
-    var log = ['脚本=' + script];
-    var OA = null;
-    try { if (typeof wps !== 'undefined' && wps) OA = wps.OAAssist; } catch (e) { }
-    if (!OA) { try { if (typeof OAAssist !== 'undefined') OA = OAAssist; } catch (e) { } }
-    if (!OA) return { ok: false, log: log.concat('本 WPS 没暴露 OAAssist（不支持启动外部程序）').join(' | ') };
-    log.push('OAAssist 可取到');
-    if (typeof OA.ShellExecute !== 'function') {
-        return { ok: false, log: log.concat('OAAssist 上没有 ShellExecute 方法').join(' | ') };
-    }
-
-    var exe  = 'powershell.exe';
-    var args = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + script + '"';
-
-    /* ⚠️⚠️ 必须按【准确的实参个数】调用，不能用 undefined 占位。
-       上一版把四种写法统一写成传 4 个参数（多余的补 undefined），
-       JS 仍然按 4 个实参算 —— 结果每种写法都报 "Too many parameters"，
-       连"只传 1 个参数"那种也不例外，把真正的签名完全遮住了。
-       这个结论是插件的诊断信息直接给出的，不是猜的。 */
-    /* 官方签名（open.wps.cn → JSAPI → OAAssist → ShellExecute）：
-         express.ShellExecute(Url, Params)
-           Url    可选 String  网页或进程的地址
-           Params 可选 String  启动参数
-         文档原话：「当不传入参数时，该函数立即返回。」
-         —— 所以「调用没报错」绝不等于「程序被执行了」，别把不抛错当成功。 */
-    var bat = dir + 'update.bat';
-    var tries = [
-        /* ① 「只打开一个文件、不给任何参数」—— ShellExecute 的本职用法。
-           实测教训：传 ('powershell.exe', '参数串') 时，调用不报错、
-           WPS 也照样弹安全确认框，但【参数根本没被用上】——
-           文件系统证据是版本没变、更新器的临时目录也没建。
-           所以参数这条路先放弃，改成一个自包含的 .bat（它用 %~dp0 自己找路径）。 */
-        ['ShellExecute(update.bat)',         function () { return OA.ShellExecute(bat); }],
-        ['ShellExecute(update.bat,"")',      function () { return OA.ShellExecute(bat, ''); }],
-        ['ShellExecute(cmd.exe,/c bat)',     function () { return OA.ShellExecute('cmd.exe', '/c "' + bat + '"'); }],
-        ['ShellExecute(cmd.exe,/c bat,dir)', function () { return OA.ShellExecute('cmd.exe', '/c "' + bat + '"', dir); }],
-        ['ShellExecute(powershell,args)',    function () { return OA.ShellExecute(exe, args); }]
-    ];
-    for (var k = 0; k < tries.length; k++) {
-        try {
-            var r = await DSH_R(tries[k][1]());
-            log.push(tries[k][0] + ' 已调用，返回=' + (r === undefined ? 'undefined' : String(r)));
-            return { ok: true, log: log.join(' | ') };
-        } catch (e) {
-            log.push(tries[k][0] + ' 抛错: ' + (e && e.message ? e.message : e));
-        }
-    }
-    return { ok: false, log: log.join(' | ') };
-}
-
-/* ---------- 按钮上显示当前版本号 ----------
+}/* ---------- 按钮上显示当前版本号 ----------
    同时保留 ribbon.xml 里的静态 label：万一某个 WPS 版本不认 getLabel，
    按钮也不会变成空白（已验证过一次 menu 的 getLabel 在 WPS 里不刷新，
    所以这里两条腿走路）。 */
@@ -997,76 +943,57 @@ function dshCheckUpdateLabel() {
     return '检查更新 (' + DSH_VERSION + ')';
 }
 
-/* ---------- 读回更新结果 ----------
-   更新器跑完会把结果写进【同一个加载项目录】的 update-status.js。
-   插件用 <script src> 把它读回来 —— 这是唯一的回传通道：
-     · WPS 的 FileSystem 只能写裸文件名到浏览器缓存目录，读不了任意路径；
-     · fetch 也读不了 file://。
-   所以「注入一个本地脚本」是唯一能让插件知道"更新成没成"的办法。 */
-function DSH_pollUpdateResult(sinceTs, left, cb) {
-    var old = document.getElementById('dshUpdStatus');
-    if (old) { try { old.parentNode.removeChild(old); } catch (e) { } }
-    var s = document.createElement('script');
-    s.id = 'dshUpdStatus';
-    s.src = 'update-status.js?_t=' + (new Date()).getTime();
-    var retry = function () {
-        if (left > 0) { setTimeout(function () { DSH_pollUpdateResult(sinceTs, left - 1, cb); }, 2000); }
-        else { cb(null); }
-    };
-    s.onload = function () {
-        try {
-            var R = window.DSH_UPDATE_RESULT;
-            if (R && R.ts && R.ts >= sinceTs) { cb(R); return; }
-        } catch (e) { }
-        retry();                                  // 读到的是上一次的旧结果，继续等
-    };
-    s.onerror = function () { retry(); };         // 文件还没生成出来，继续等
-    try { document.head.appendChild(s); } catch (e) { cb(null); }
+/* ---------- 安装目录的 file:// 基地址 ----------
+   更新对话框页和更新器的状态文件都在这个目录里。 */
+function DSH_baseUrl() {
+    try {
+        var u = String(window.location.href).split('?')[0].split('#')[0];
+        return u.substring(0, u.lastIndexOf('/') + 1);
+    } catch (e) { return ''; }
 }
 
-/* 发现新版本后的处置：先试拉起更新器；起不来再退回"告诉你下载地址"。 */
-async function DSH_onNewVersion(L, manual) {
-    if (DSH_OPTIONS.useUpdater) {
-        var r = await DSH_launchUpdater();
-        DSH_quiet('拉起更新器 ' + (r.ok ? '已发出' : '失败') + ' | ' + r.log);
-        if (r.ok) {
-            /* 不急着报「已启动」—— 等更新器把结果写出来再报。
-               否则就会出现「说启动了、其实根本没跑」的假成功（上一版正是如此）。
-               容忍 5 秒时钟误差，避免读到上一次的旧结果。 */
-            var t0 = (new Date()).getTime() - 5000;
-            DSH_pollUpdateResult(t0, 10, function (R) {
-                if (!R) {
-                    DSH_say('已请求自动更新，但没能确认结果。\n\n' +
-                            '插件已在安装时注册了开机自动更新，' +
-                            '下次开机它会自己完成，不需要你操作。\n\n' +
-                            '想立刻更新，双击这个文件即可：\n' +
-                            DSH_installDir() + 'update.bat\n\n' +
-                            '（注：WPS 的安全确认框点了「是」也不会真的执行外部程序，' +
-                            '这是它的沙箱行为，所以自动更新不走 WPS。）');
-                    return;
-                }
-                if (R.ok) {
-                    DSH_say('★ 更新成功\n\n' +
-                            '已从 ' + R.from + ' 更新到 ' + R.to + '。\n' +
-                            '【完全退出 WPS 再打开】即可生效。');
-                } else {
-                    DSH_say('自动更新未成功。\n\n' +
-                            '当前 ' + DSH_VERSION + '，目标 ' + R.to + '\n' +
-                            '原因：' + (R.msg || '未知') + '\n\n' +
-                            '可以再点一次「检查更新」，或手动下载安装包。');
-                }
-            });
-            return;
+/* ---------- 弹「是否更新」对话框 ----------
+   为什么不用 alert：用户要的是「是 / 否两个按钮 + 下载进度 + 更新成功提示」，
+   alert 一样都给不了。
+   另外，之前把 ShellExecute 的 try/catch 诊断（一长串英文）弹给用户看，
+   是设计失误 —— 用户不需要看懂报错，只需要知道「更新成没成」。 */
+function DSH_showUpdateDialog(L) {
+    var base = DSH_baseUrl();
+    if (!base) return false;
+    var url = base + 'dialog_update.html' +
+              '?cur='  + encodeURIComponent(DSH_VERSION) +
+              '&new='  + encodeURIComponent(String(L.version || '')) +
+              '&note=' + encodeURIComponent(String(L.note || '')) +
+              '&dir='  + encodeURIComponent(DSH_installDir());
+    var dpr = 1;
+    try { dpr = window.devicePixelRatio || 1; } catch (e) { }
+    try {
+        if (window.wps && typeof wps.ShowDialog === 'function') {
+            wps.ShowDialog(url, '检查更新', Math.round(430 * dpr), Math.round(310 * dpr), true);
+            return true;
         }
-if (!manual) return;                      // 自动模式下失败 = 静默
-        DSH_say('发现新版本 ' + L.version + '，但自动更新器启动失败。\n\n' +
-                '诊断：\n' + r.log + '\n\n' +
-                '常见原因：WPS 的「沙箱保护」拦截了外部程序调用。\n' +
-                '可在 WPS 设置中心 → 安全 里查看该开关。');
-        DSH_notifyUpdate(L, true);
+    } catch (e) { }
+    try {
+        if (window.wps && wps.Dialog && typeof wps.Dialog.openDialog === 'function') {
+            wps.Dialog.openDialog({ title: '检查更新', width: 430, height: 310, url: url });
+            return true;
+        }
+    } catch (e) { }
+    return false;
+}
+
+/* 发现新版本后的处置：
+   · 手动点「检查更新」→ 弹对话框问「是否更新」；选【是】后由对话框负责
+     拉起更新器并显示进度。实际进度以更新器写的 update-status.js 为准 ——
+     不把「调用成功」当成「更新成功」。
+   · 启动时的自动检查 → 不打扰用户；登录时的开机项会自己处理。 */
+async function DSH_onNewVersion(L, manual) {
+    if (!manual) {
+        DSH_quiet('发现新版本 ' + L.version + '（自动检查，不打扰用户）');
         return;
     }
-    DSH_notifyUpdate(L, false);
+    if (DSH_showUpdateDialog(L)) return;
+    DSH_notifyUpdate(L, false);      // 对话框弹不出来时的兜底
 }
 var DSH_UPDATE_URL = (typeof DSH_UPDATE_URL === 'string') ? DSH_UPDATE_URL : '';
 var DSH_UPDATE_STATE = { done: false, notified: false };

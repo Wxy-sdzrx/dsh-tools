@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>检查更新</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px; color: #222; background: #fff;
+    padding: 16px 18px; box-sizing: border-box;
+  }
+  .ttl { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .ttl.ok { color: #1a7f37; }
+  .ttl.bad { color: #c0392b; }
+  table { border-collapse: collapse; margin-bottom: 8px; }
+  td { padding: 2px 0; }
+  td.k { color: #666; padding-right: 14px; }
+  td.v { font-family: Consolas, "Microsoft YaHei UI", monospace; font-weight: 600; }
+  td.v.new { color: #1a7f37; }
+  .note {
+    color: #444; background: #f7f7f7; border-left: 3px solid #ddd;
+    padding: 6px 9px; margin: 6px 0 8px; max-height: 66px; overflow: auto;
+    white-space: pre-wrap; line-height: 1.5;
+  }
+  .warn {
+    color: #8a5a00; background: #fff8e6; border: 1px solid #f0dca8;
+    border-radius: 4px; padding: 6px 9px; margin: 8px 0; line-height: 1.5;
+  }
+  .bar { height: 12px; background: #eee; border-radius: 6px; overflow: hidden; margin: 10px 0 7px; }
+  #fill { height: 100%; width: 0%; background: #1a7f37; transition: width .25s; }
+  .st { color: #444; min-height: 18px; }
+  .st.dim { color: #888; }
+  .btns { position: absolute; right: 18px; bottom: 14px; }
+  button { padding: 5px 20px; font-size: 13px; cursor: pointer; margin-left: 8px; }
+  button.primary { background: #1a7f37; color: #fff; border: 1px solid #1a7f37; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- ① 询问 -->
+<div id="ask">
+  <div class="ttl">发现新版本</div>
+  <table>
+    <tr><td class="k">当前版本</td><td class="v" id="cur">—</td></tr>
+    <tr><td class="k">最新版本</td><td class="v new" id="new">—</td></tr>
+  </table>
+  <div class="note" id="note">—</div>
+  <div class="warn">
+    更新会下载新版本并自动替换插件文件。<br>
+    若系统弹出「已拦截 / 是否允许」提示，<b>请选择【放行】或【允许】</b>，否则更新无法完成。
+  </div>
+  <div class="btns">
+    <button id="no">否</button>
+    <button id="yes" class="primary">是</button>
+  </div>
+</div>
+
+<!-- ② 进行中 -->
+<div id="work" style="display:none">
+  <div class="ttl">正在更新…</div>
+  <div class="bar"><div id="fill"></div></div>
+  <div class="st" id="st">正在启动更新器…</div>
+  <div class="warn">
+    若系统弹出「已拦截 / 是否允许」提示，<b>请选择【放行】或【允许】</b>，否则更新无法完成。
+  </div>
+</div>
+
+<!-- ③ 成功 -->
+<div id="done" style="display:none">
+  <div class="ttl ok">★ 更新成功</div>
+  <div class="st" id="doneMsg">—</div>
+  <div class="warn">请【完全退出 WPS 再打开】，新版本才会生效。</div>
+  <div class="btns"><button id="ok2" class="primary">确定</button></div>
+</div>
+
+<!-- ④ 失败 -->
+<div id="err" style="display:none">
+  <div class="ttl bad">更新未成功</div>
+  <div class="st" id="errMsg">—</div>
+  <div class="btns">
+    <button id="retry">重试</button>
+    <button id="ok3" class="primary">关闭</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  function q(name) {
+    try {
+      var m = new RegExp('[?&]' + name + '=([^&]*)').exec(String(location.search || ''));
+      return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+    } catch (e) { return ''; }
+  }
+  function show(id) {
+    var ids = ['ask', 'work', 'done', 'err'];
+    for (var i = 0; i < ids.length; i++) {
+      document.getElementById(ids[i]).style.display = (ids[i] === id) ? '' : 'none';
+    }
+  }
+  function closeMe() {
+    /* 官方文档没写关闭方法；社区确认对话框页里 window.close() 有效 */
+    try { if (window.wps && wps.Dialog && wps.Dialog.close) { wps.Dialog.close(); return; } } catch (e) { }
+    try { window.close(); } catch (e) { }
+  }
+
+  var curV  = q('cur');
+  var newV  = q('new');
+  var note  = q('note');
+  document.getElementById('cur').textContent = curV || '—';
+  document.getElementById('new').textContent = newV || '—';
+  var noteEl = document.getElementById('note');
+  if (note) { noteEl.textContent = '更新内容：\n' + note; } else { noteEl.style.display = 'none'; }
+
+  /* ---------- 读更新器写下的进度 ----------
+     插件读不了文件（WPS 的 FileSystem 只认裸文件名、写到浏览器缓存目录；
+     fetch 读不了 file://）。所以唯一的通道是：注入【同目录】的 update-status.js。 */
+  function pollStatus(sinceTs, cb) {
+    var old = document.getElementById('dshSt');
+    if (old) { try { old.parentNode.removeChild(old); } catch (e) { } }
+    var s = document.createElement('script');
+    s.id = 'dshSt';
+    s.src = 'update-status.js?_t=' + (new Date()).getTime();
+    s.onload = function () {
+      var R = null;
+      try { R = window.DSH_UPDATE_RESULT; } catch (e) { }
+      if (R && R.ts && R.ts >= sinceTs) { cb(R); return; }
+      cb(null);                 // 还是上一次的旧结果，当作"暂无新消息"
+    };
+    s.onerror = function () { cb(null); };   // 文件还没生成
+    try { document.head.appendChild(s); } catch (e) { cb(null); }
+  }
+
+  var timer = null, t0 = 0, secs = 0;
+
+  function setProgress(pct) {
+    document.getElementById('fill').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  }
+  function setSt(txt, dim) {
+    var el = document.getElementById('st');
+    el.textContent = txt;
+    el.className = dim ? 'st dim' : 'st';
+  }
+
+  function startUpdate() {
+    show('work');
+    setProgress(3);
+    setSt('正在启动更新器…');
+    t0 = (new Date()).getTime() - 3000;   // 容忍 3 秒时钟误差
+
+    /* 拉起更新器。
+       实测教训：WPS 的 ShellExecute 会弹安全确认框、调用也不报错，
+       但【点了「是」也不一定真的执行】。所以这里不把"调用成功"当成"更新成功"，
+       一律以 update-status.js 里的实际进度为准。 */
+    var launched = false, launchErr = '';
+    try {
+      var OA = (window.wps && wps.OAAssist) ? wps.OAAssist : null;
+      var dir = q('dir');
+      var bat = dir + 'update.bat';
+      if (OA && typeof OA.ShellExecute === 'function') {
+        try { OA.ShellExecute(bat); launched = true; }
+        catch (e1) {
+          try { OA.ShellExecute(bat, ''); launched = true; }
+          catch (e2) {
+            try { OA.ShellExecute('cmd.exe', '/c "' + bat + '"'); launched = true; }
+            catch (e3) { launchErr = (e3 && e3.message) ? e3.message : String(e3); }
+          }
+        }
+      } else { launchErr = '本 WPS 未提供 OAAssist'; }
+    } catch (e) { launchErr = (e && e.message) ? e.message : String(e); }
+
+    secs = 0;
+    timer = setInterval(function () {
+      secs++;
+      pollStatus(t0, function (R) {
+        if (!R) {
+          if (secs === 6)  { setSt('等待更新器启动…（若弹出拦截提示，请选择【放行】）', true); }
+          if (secs >= 25) {
+            clearInterval(timer);
+            show('err');
+            var batPath = q('dir') + 'update.bat';
+            document.getElementById('errMsg').textContent =
+              (launched ? '已请求启动更新器，但 25 秒内没有收到进度。'
+                        : '无法启动更新器：' + launchErr) +
+              '\n\n最可能的原因：系统拦截了这个程序，没有选【放行】。\n' +
+              '（有些安全软件会在屏幕右下角弹提示，需要手动放行。）' +
+              '\n\n最快的办法 —— 直接双击这个文件，更新一样会完成：\n' + batPath;
+          }
+          return;
+        }
+        if (R.state === 'downloading') {
+          setProgress(5 + (R.done / Math.max(1, R.total)) * 55);
+          setSt('正在下载 ' + R.done + '/' + R.total + '　' + (R.file || ''));
+        } else if (R.state === 'installing') {
+          setProgress(60 + (R.done / Math.max(1, R.total)) * 38);
+          setSt('正在写入 ' + R.done + '/' + R.total + '　' + (R.file || ''));
+        } else if (R.state === 'done' && R.ok) {
+          clearInterval(timer);
+          setProgress(100);
+          show('done');
+          document.getElementById('doneMsg').textContent =
+            '已从 ' + R.from + ' 更新到 ' + (R.to || R.from) +
+            (R.from === (R.to || R.from) ? '（无需更新）' : '');
+        } else if (R.state === 'error') {
+          clearInterval(timer);
+          show('err');
+          document.getElementById('errMsg').textContent =
+            (R.msg || '更新失败') + '\n\n可以稍后重试，或手动下载安装包。';
+        }
+      });
+    }, 700);
+  }
+
+  document.getElementById('yes').onclick = startUpdate;
+  document.getElementById('no').onclick  = closeMe;
+  document.getElementById('ok2').onclick = closeMe;
+  document.getElementById('ok3').onclick = closeMe;
+  document.getElementById('retry').onclick = function () { clearInterval(timer); startUpdate(); };
+
+  document.onkeydown = function (e) {
+    if (e.keyCode === 27) { closeMe(); }      // Esc 关掉
+  };
+})();
+</script>
+</body>
+</html>
