@@ -7,6 +7,8 @@
   /* 布局要点：用【真正的 flex 纵向布局】而不是绝对定位。
      早先用 position:absolute 把「关闭」浮在右下角，内容一长就压到它下面 ——
      重叠是必然的，不是偶然。现在内容区自己滚动、底部按钮是独立一行，物理上不可能重叠。 */
+  /* 窗口尺寸在主页面 main.js 里设（现在 424x300）。改这里之前先算清楚：
+     ask 页约 274px、work 页（8 行文件列表）约 250px，300 刚好不留空白、不用滚动。 */
   html, body { margin:0; padding:0; height:100%; overflow:hidden; }
   body { font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif; font-size:12.5px;
          color:#222; background:#fff; }
@@ -41,7 +43,7 @@
   .st { color:#444; min-height:17px; font-size:12.5px; }
   .st.dim { color:#888; }
   .list { margin:7px 0 0; font-family:Consolas,"Microsoft YaHei UI",monospace;
-          font-size:11px; color:#aaa; line-height:1.6; }
+          font-size:11px; color:#aaa; line-height:1.45; }
   .list .d { color:#1a7f37; }
   .list .c { color:#111; font-weight:600; }
   .warn { color:#8a5a00; background:#fff8e6; border:1px solid #f0dca8; border-radius:3px;
@@ -63,8 +65,8 @@
     <div class="row">
       <div class="txt">
         <b>方式一：直接更新</b>
-        <span>由插件自动下载并替换，完成后重启 WPS 生效。</span>
-        <span><em>需先关闭 WPS 的「沙箱保护」</em>（设置中心 → 安全）。</span>
+        <span>自动下载并替换，完成后重启 WPS 生效</span>
+        <span><em>需先关闭 WPS「沙箱保护」</em>（设置中心→安全）</span>
       </div>
       <button class="primary" id="go1">直接更新</button>
     </div>
@@ -72,7 +74,7 @@
     <div class="row">
       <div class="txt">
         <b>方式二：复制下载链接</b>
-        <span>一键复制安装包地址，粘贴到浏览器下载。<em>不需改任何设置。</em></span>
+        <span>复制安装包地址，粘贴到浏览器下载</span>
       </div>
       <button id="go2">复制链接</button>
     </div>
