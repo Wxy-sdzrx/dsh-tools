@@ -1,6 +1,5 @@
 /* 大地九部便捷插件 · 版本清单
-   放在 GitHub 仓库根目录，插件启动时会读它。
-   ★ 每次发新版，只改下面 version / url / note 三个字段。 */
+   本文件由 release.ps1 自动生成，字段已填好，直接上传覆盖即可。 */
 
 var DSH_LATEST = {
     version: '1.3.1',
