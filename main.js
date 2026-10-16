@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.9.3';
+var DSH_VERSION = '1.9.5';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -972,7 +972,10 @@ function DSH_showUpdateDialog(L, manual) {
     try { dpr = window.devicePixelRatio || 1; } catch (e) { }
     try {
         if (window.wps && typeof wps.ShowDialog === 'function') {
-            wps.ShowDialog(url, '检查更新', Math.round(424 * dpr), Math.round(300 * dpr), true);
+            /* 尺寸按【真实渲染】定：ask 页内容约 264px、work 页（8 行文件列表）约 257px。
+               早前按错误画布估小了，导致"方式二"整行被裁 —— 那是尺寸算错，不是布局错。 */
+            var szUp = (q === 'work') ? [424, 270] : [424, 280];
+            wps.ShowDialog(url, '检查更新', Math.round(szUp[0] * dpr), Math.round(szUp[1] * dpr), true);
             return true;
         }
     } catch (e) { }
@@ -999,7 +1002,11 @@ function DSH_showResultDialog(view, L, failUrl) {
     try { dpr = window.devicePixelRatio || 1; } catch (e) { }
     try {
         if (window.wps && typeof wps.ShowDialog === 'function') {
-            wps.ShowDialog(url, '检查更新', Math.round(424 * dpr), Math.round(300 * dpr), true);
+            /* 结果页窗口尺寸【按内容定】，不能沿用更新页那个大尺寸 ——
+               两行字配一个 424x300 的大框，看起来就是个空盒子。
+               实测渲染后定的：已是最新约 90px 内容，读不到清单约 150px（地址可能折两行）。 */
+            var sz = (view === 'netfail') ? [380, 152] : [360, 124];   // 已是最新 2 行、读不到清单 4 行
+            wps.ShowDialog(url, '检查更新', Math.round(sz[0] * dpr), Math.round(sz[1] * dpr), true);
             return true;
         }
     } catch (e) { }

@@ -40,7 +40,7 @@
   .row button.primary { background:#1a7f37; color:#fff; border-color:#1a7f37; }
   .bar { height:10px; background:#eee; border-radius:5px; overflow:hidden; margin:9px 0 7px; }
   #fill { height:100%; width:0%; background:#1a7f37; transition:width .2s; }
-  .st { color:#444; min-height:17px; font-size:12.5px; }
+  .st { color:#444; min-height:17px; font-size:12.5px; white-space:pre-wrap; }
   .st.dim { color:#888; }
   .list { margin:7px 0 0; font-family:Consolas,"Microsoft YaHei UI",monospace;
           font-size:11px; color:#aaa; line-height:1.45; }
@@ -142,7 +142,7 @@
 <div id="err" class="page">
   <div class="scroll">
     <div class="hd">已排队：稍后自动完成</div>
-    <div class="st" id="errMsg" style="font-size:11.5px;line-height:1.6">—</div>
+    <div class="st" id="errMsg" style="font-size:11.5px;line-height:1.6;white-space:pre-wrap">—</div>
   </div>
   <div class="ft">
     <button id="copy2">复制下载链接</button>
@@ -187,8 +187,27 @@
      为什么把这些提示也搬进对话框：WPS 的原生 alert 没法调比例，一张大框配两行字很丑；
      放进这里就能和更新对话框共用同一套版式和尺寸。 */
   var view = q('view');
+  /* view 参数：直接落到某一页，用于"把每一页渲染出来看"。
+     这是给【设计核对】用的：改完界面后可以把 7 个页面各渲染一张图，
+     人和 AI 看同一张图，避免"只有一边看得到"。 */
   if (view === 'uptodate') { show('uptodate'); }
   else if (view === 'netfail') { show('netfail'); }
+  else if (view === 'done') {
+    document.getElementById('doneMsg').textContent =
+      (q('from') && q('to')) ? ('已从 ' + q('from') + ' 更新到 ' + q('to')) : '已从 1.9.3 更新到 1.9.4';
+    show('done');
+  } else if (view === 'work') {
+    setProgress(45); setSt('正在下载 4/8'); renderList(4); show('work');
+  } else if (view === 'link') {
+    document.getElementById('linkMsg').textContent = '已复制到剪贴板，粘贴到浏览器地址栏即可下载。';
+    show('link');
+  } else if (view === 'err') {
+    document.getElementById('errMsg').textContent =
+      '这次没能启动更新程序 —— WPS 的「沙箱保护」拦住了（正常行为，不是出错）。\n' +
+      '最快办法：双击下面这个文件，几秒完成，不用重启：\n' + (dir || 'C:\\…\\BianjieTools_1.9.4\\') + 'update.bat\n' +
+      '或者：不管它，下次开机登录时会自动完成。';
+    show('err');
+  }
   document.getElementById('urlBox').value = dlUrl;
 
   function copyLink() {
