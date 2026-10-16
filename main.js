@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.8.4';
+var DSH_VERSION = '1.8.6';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -957,14 +957,16 @@ function DSH_baseUrl() {
    alert 一样都给不了。
    另外，之前把 ShellExecute 的 try/catch 诊断（一长串英文）弹给用户看，
    是设计失误 —— 用户不需要看懂报错，只需要知道「更新成没成」。 */
-function DSH_showUpdateDialog(L) {
+function DSH_showUpdateDialog(L, manual) {
     var base = DSH_baseUrl();
     if (!base) return false;
     var url = base + 'dialog_update.html' +
               '?cur='  + encodeURIComponent(DSH_VERSION) +
               '&new='  + encodeURIComponent(String(L.version || '')) +
               '&note=' + encodeURIComponent(String(L.note || '')) +
-              '&dir='  + encodeURIComponent(DSH_installDir());
+              '&dir='  + encodeURIComponent(DSH_installDir()) +
+              '&mode=' + (manual ? 'manual' : 'auto') +
+              '&url='  + encodeURIComponent(String(L.url || ''));
     var dpr = 1;
     try { dpr = window.devicePixelRatio || 1; } catch (e) { }
     try {
@@ -982,17 +984,14 @@ function DSH_showUpdateDialog(L) {
     return false;
 }
 
-/* 发现新版本后的处置：
-   · 手动点「检查更新」→ 弹对话框问「是否更新」；选【是】后由对话框负责
-     拉起更新器并显示进度。实际进度以更新器写的 update-status.js 为准 ——
-     不把「调用成功」当成「更新成功」。
-   · 启动时的自动检查 → 不打扰用户；登录时的开机项会自己处理。 */
+/* 发现新版本后的处置：手动检查和启动时的自动检查【都弹同一个对话框】，
+   区别只在措辞（自动模式多一句"这是启动时自动发现的"）。
+   为什么不静默：用户明确要求「要弹框提醒」。
+   注意：插件【无法】触发更新 —— WPS 的沙箱保护会拦掉加载项发起的全部
+   ShellExecute 调用（连打开一个 URL 协议都拦，已实测）。所以对话框如实说
+   「已排队，下次开机登录后自动完成」，而不是假装在更新、也不是报"失败"。 */
 async function DSH_onNewVersion(L, manual) {
-    if (!manual) {
-        DSH_quiet('发现新版本 ' + L.version + '（自动检查，不打扰用户）');
-        return;
-    }
-    if (DSH_showUpdateDialog(L)) return;
+    if (DSH_showUpdateDialog(L, manual)) return;
     DSH_notifyUpdate(L, false);      // 对话框弹不出来时的兜底
 }
 var DSH_UPDATE_URL = (typeof DSH_UPDATE_URL === 'string') ? DSH_UPDATE_URL : '';

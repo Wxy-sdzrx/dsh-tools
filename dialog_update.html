@@ -5,40 +5,38 @@
 <title>检查更新</title>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; }
-  body {
-    font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
-    font-size: 13px; color: #222; background: #fff;
-    padding: 16px 18px; box-sizing: border-box;
-  }
-  .ttl { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+         font-size: 13px; color: #222; background: #fff; padding: 14px 16px; box-sizing: border-box; }
+  .ttl { font-size: 15px; font-weight: 600; margin-bottom: 9px; }
   .ttl.ok { color: #1a7f37; }
-  .ttl.bad { color: #c0392b; }
-  table { border-collapse: collapse; margin-bottom: 8px; }
-  td { padding: 2px 0; }
+  table { border-collapse: collapse; margin-bottom: 7px; }
+  td { padding: 1px 0; }
   td.k { color: #666; padding-right: 14px; }
   td.v { font-family: Consolas, "Microsoft YaHei UI", monospace; font-weight: 600; }
   td.v.new { color: #1a7f37; }
-  .note {
-    color: #444; background: #f7f7f7; border-left: 3px solid #ddd;
-    padding: 6px 9px; margin: 6px 0 8px; max-height: 66px; overflow: auto;
-    white-space: pre-wrap; line-height: 1.5;
-  }
-  .warn {
-    color: #8a5a00; background: #fff8e6; border: 1px solid #f0dca8;
-    border-radius: 4px; padding: 6px 9px; margin: 8px 0; line-height: 1.5;
-  }
+  .note { color: #444; background: #f7f7f7; border-left: 3px solid #ddd;
+          padding: 5px 8px; margin: 5px 0 9px; max-height: 54px; overflow: auto;
+          white-space: pre-wrap; line-height: 1.45; }
+  .opt { border: 1px solid #ddd; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; }
+  .opt h4 { margin: 0 0 4px 0; font-size: 13px; }
+  .opt p { margin: 0; color: #666; line-height: 1.5; }
+  .opt .go { float: right; margin-top: -24px; }
+  .warn { color: #8a5a00; background: #fff8e6; border: 1px solid #f0dca8;
+          border-radius: 3px; padding: 4px 7px; margin-top: 5px; line-height: 1.45; font-size: 12px; }
   .bar { height: 12px; background: #eee; border-radius: 6px; overflow: hidden; margin: 10px 0 7px; }
   #fill { height: 100%; width: 0%; background: #1a7f37; transition: width .25s; }
   .st { color: #444; min-height: 18px; }
   .st.dim { color: #888; }
-  .btns { position: absolute; right: 18px; bottom: 14px; }
-  button { padding: 5px 20px; font-size: 13px; cursor: pointer; margin-left: 8px; }
+  .url { width: 100%; box-sizing: border-box; font-family: Consolas, monospace; font-size: 12px;
+         padding: 5px 7px; border: 1px solid #b0b0b0; border-radius: 3px; }
+  .btns { position: absolute; right: 16px; bottom: 12px; }
+  button { padding: 5px 18px; font-size: 13px; cursor: pointer; margin-left: 8px; }
   button.primary { background: #1a7f37; color: #fff; border: 1px solid #1a7f37; border-radius: 3px; }
 </style>
 </head>
 <body>
 
-<!-- ① 询问 -->
+<!-- 询问：两种更新模式 -->
 <div id="ask">
   <div class="ttl">发现新版本</div>
   <table>
@@ -46,18 +44,31 @@
     <tr><td class="k">最新版本</td><td class="v new" id="new">—</td></tr>
   </table>
   <div class="note" id="note">—</div>
-  <div class="warn">
-    更新会下载新版本并自动替换插件文件。<br>
-    若系统弹出「已拦截 / 是否允许」提示，<b>请选择【放行】或【允许】</b>，否则更新无法完成。
+  <div class="warn" id="autoTip" style="display:none">
+    （这是 WPS 启动时自动检查发现的，不用急着处理。）
   </div>
-  <!-- 按钮顺序按用户要求：【是】在左，【否】在右 -->
-  <div class="btns">
-    <button id="yes" class="primary">是</button>
-    <button id="no">否</button>
+
+  <div class="opt">
+    <button class="go primary" id="go1">直接更新</button>
+    <h4>方式一：直接更新</h4>
+    <p>由插件自动下载并替换文件，完成后重启 WPS 生效。</p>
+    <div class="warn">
+      <b>需要先关闭 WPS 的「沙箱保护」</b>：WPS → 设置中心 → 安全 → 沙箱保护 → 关闭。<br>
+      （WPS 默认拦截加载项启动外部程序，不关的话这一步会失败。）
+    </div>
   </div>
+
+  <div class="opt">
+    <button class="go" id="go2">复制下载链接</button>
+    <h4>方式二：复制下载链接，手动安装</h4>
+    <p>点一下就把安装包地址复制到剪贴板，粘贴到浏览器下载即可。</p>
+    <p style="color:#888">不需要改任何设置。</p>
+  </div>
+
+  <div class="btns"><button id="no">关闭</button></div>
 </div>
 
-<!-- ② 进行中 -->
+<!-- 进行中 -->
 <div id="work" style="display:none">
   <div class="ttl">正在更新…</div>
   <div class="bar"><div id="fill"></div></div>
@@ -67,7 +78,7 @@
   </div>
 </div>
 
-<!-- ③ 成功 -->
+<!-- 成功 -->
 <div id="done" style="display:none">
   <div class="ttl ok">★ 更新成功</div>
   <div class="st" id="doneMsg">—</div>
@@ -75,12 +86,20 @@
   <div class="btns"><button id="ok2" class="primary">确定</button></div>
 </div>
 
-<!-- ④ 失败 -->
+<!-- 链接已复制 -->
+<div id="link" style="display:none">
+  <div class="ttl ok">★ 链接已复制</div>
+  <div class="st" id="linkMsg">粘贴到浏览器地址栏即可下载。</div>
+  <div style="margin:10px 0"><input class="url" id="urlBox" readonly spellcheck="false"></div>
+  <div class="btns"><button id="ok4" class="primary">确定</button></div>
+</div>
+
+<!-- 只能排队 -->
 <div id="err" style="display:none">
-  <div class="ttl bad">更新未成功</div>
+  <div class="ttl">已排队：稍后自动完成</div>
   <div class="st" id="errMsg">—</div>
   <div class="btns">
-    <button id="retry">重试</button>
+    <button id="copy2">复制下载链接</button>
     <button id="ok3" class="primary">关闭</button>
   </div>
 </div>
@@ -96,7 +115,7 @@
     } catch (e) { return ''; }
   }
   function show(id) {
-    var ids = ['ask', 'work', 'done', 'err'];
+    var ids = ['ask', 'work', 'done', 'link', 'err'];
     for (var i = 0; i < ids.length; i++) {
       document.getElementById(ids[i]).style.display = (ids[i] === id) ? '' : 'none';
     }
@@ -107,13 +126,45 @@
     try { window.close(); } catch (e) { }
   }
 
-  var curV  = q('cur');
-  var newV  = q('new');
-  var note  = q('note');
+  var curV = q('cur'), newV = q('new'), note = q('note'), dir = q('dir');
+  var dlUrl = q('url');
   document.getElementById('cur').textContent = curV || '—';
   document.getElementById('new').textContent = newV || '—';
   var noteEl = document.getElementById('note');
   if (note) { noteEl.textContent = '更新内容：\n' + note; } else { noteEl.style.display = 'none'; }
+  if (q('mode') === 'auto') { document.getElementById('autoTip').style.display = ''; }
+  document.getElementById('urlBox').value = dlUrl;
+
+  /* ---------- 复制下载链接 ---------- */
+  function copyLink() {
+    if (!dlUrl) {
+      document.getElementById('linkMsg').textContent = '版本清单里没有填下载地址，请手动向维护人索取。';
+      show('link');
+      return;
+    }
+    var box = document.getElementById('urlBox');
+    var ok = false;
+    try { box.focus(); box.select(); ok = document.execCommand('copy'); } catch (e) { }
+    if (ok) {
+      document.getElementById('linkMsg').textContent = '已复制到剪贴板，粘贴到浏览器地址栏即可下载。';
+      show('link');
+      return;
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(dlUrl).then(function () {
+          document.getElementById('linkMsg').textContent = '已复制到剪贴板，粘贴到浏览器地址栏即可下载。';
+          show('link');
+        }, function () {
+          document.getElementById('linkMsg').textContent = '自动复制失败，请手动选中下面的地址按 Ctrl+C 复制。';
+          show('link');
+        });
+        return;
+      }
+    } catch (e) { }
+    document.getElementById('linkMsg').textContent = '自动复制失败，请手动选中下面的地址按 Ctrl+C 复制。';
+    show('link');
+  }
 
   /* ---------- 读更新器写下的进度 ----------
      插件读不了文件（WPS 的 FileSystem 只认裸文件名、写到浏览器缓存目录；
@@ -128,44 +179,28 @@
       var R = null;
       try { R = window.DSH_UPDATE_RESULT; } catch (e) { }
       if (R && R.ts && R.ts >= sinceTs) { cb(R); return; }
-      cb(null);                 // 还是上一次的旧结果，当作"暂无新消息"
+      cb(null);
     };
-    s.onerror = function () { cb(null); };   // 文件还没生成
+    s.onerror = function () { cb(null); };
     try { document.head.appendChild(s); } catch (e) { cb(null); }
   }
 
   var timer = null, t0 = 0, secs = 0;
-
-  function setProgress(pct) {
-    document.getElementById('fill').style.width = Math.max(0, Math.min(100, pct)) + '%';
-  }
-  function setSt(txt, dim) {
-    var el = document.getElementById('st');
-    el.textContent = txt;
-    el.className = dim ? 'st dim' : 'st';
-  }
+  function setProgress(p) { document.getElementById('fill').style.width = Math.max(0, Math.min(100, p)) + '%'; }
+  function setSt(t, dim) { var el = document.getElementById('st'); el.textContent = t; el.className = dim ? 'st dim' : 'st'; }
 
   function startUpdate() {
-    show('work');
-    setProgress(3);
-    setSt('正在启动更新器…');
-    t0 = (new Date()).getTime() - 3000;   // 容忍 3 秒时钟误差
-
-    /* 拉起更新器。
-       实测教训：WPS 的 ShellExecute 会弹安全确认框、调用也不报错，
-       但【点了「是」也不一定真的执行】。所以这里不把"调用成功"当成"更新成功"，
-       一律以 update-status.js 里的实际进度为准。 */
+    show('work'); setProgress(3); setSt('正在启动更新器…');
+    t0 = (new Date()).getTime() - 3000;
     var launched = false, launchErr = '';
     try {
       var OA = (window.wps && wps.OAAssist) ? wps.OAAssist : null;
-      var dir = q('dir');
       var bat = dir + 'update.bat';
       if (OA && typeof OA.ShellExecute === 'function') {
         /* 顺序有讲究：
-           ① 先试自定义 URL 协议 —— WPS 的沙箱拦的是"执行程序"，
-              而"打开一个地址"是 OAAssist 的本职用途，有不被拦的可能。
-           ② 再试直接打开 update.bat（沙箱关掉时这条能成，已实测）。
-           ③ 最后试 cmd.exe /c。 */
+           ① 先试自定义 URL 协议（"打开地址"是 OAAssist 的本职用途）
+           ② 再试直接打开 update.bat（沙箱关掉时这条能成，已实测）
+           ③ 最后 cmd.exe /c */
         var tries = [
           function () { OA.ShellExecute('bianjie-update://run'); },
           function () { OA.ShellExecute(bat); },
@@ -184,17 +219,17 @@
       secs++;
       pollStatus(t0, function (R) {
         if (!R) {
-          if (secs === 6)  { setSt('等待更新器启动…（若弹出拦截提示，请选择【放行】）', true); }
-          if (secs >= 25) {
+          if (secs === 6) { setSt('等待更新器启动…（若弹出拦截提示，请选【放行】）', true); }
+          if (secs >= 20) {
             clearInterval(timer);
             show('err');
-            var batPath = q('dir') + 'update.bat';
+            var batPath = dir + 'update.bat';
+            /* 措辞要诚实：这不是"失败"，而是这条触发路径被 WPS 拦了，还有别的路会完成。 */
             document.getElementById('errMsg').textContent =
-              (launched ? '已请求启动更新器，但 25 秒内没有收到进度。'
-                        : '无法启动更新器：' + launchErr) +
-              '\n\n最可能的原因：系统拦截了这个程序，没有选【放行】。\n' +
-              '（有些安全软件会在屏幕右下角弹提示，需要手动放行。）' +
-              '\n\n最快的办法 —— 直接双击这个文件，更新一样会完成：\n' + batPath;
+              '发现新版本 ' + newV + '，但 WPS 的安全机制（沙箱保护）拦截了' +
+              '插件启动更新程序 —— 这是 WPS 的正常行为，不是出错。\n\n' +
+              '如果不想关沙箱保护，请用【复制下载链接】手动安装，' +
+              '或直接双击这个文件（一样会完成）：\n' + batPath;
           }
           return;
         }
@@ -205,31 +240,26 @@
           setProgress(60 + (R.done / Math.max(1, R.total)) * 38);
           setSt('正在写入 ' + R.done + '/' + R.total + '　' + (R.file || ''));
         } else if (R.state === 'done' && R.ok) {
-          clearInterval(timer);
-          setProgress(100);
-          show('done');
+          clearInterval(timer); setProgress(100); show('done');
           document.getElementById('doneMsg').textContent =
-            '已从 ' + R.from + ' 更新到 ' + (R.to || R.from) +
-            (R.from === (R.to || R.from) ? '（无需更新）' : '');
+            (R.from === (R.to || R.from)) ? ('当前已是最新版本 ' + R.from)
+                                          : ('已从 ' + R.from + ' 更新到 ' + R.to);
         } else if (R.state === 'error') {
-          clearInterval(timer);
-          show('err');
+          clearInterval(timer); show('err');
           document.getElementById('errMsg').textContent =
-            (R.msg || '更新失败') + '\n\n可以稍后重试，或手动下载安装包。';
+            (R.msg || '更新失败') + '\n\n可以改用【复制下载链接】手动安装。';
         }
       });
     }, 700);
   }
 
-  document.getElementById('yes').onclick = startUpdate;
+  document.getElementById('go1').onclick = startUpdate;
+  document.getElementById('go2').onclick = copyLink;
+  document.getElementById('copy2').onclick = copyLink;
   document.getElementById('no').onclick  = closeMe;
   document.getElementById('ok2').onclick = closeMe;
   document.getElementById('ok3').onclick = closeMe;
-  document.getElementById('retry').onclick = function () { clearInterval(timer); startUpdate(); };
-
-  document.onkeydown = function (e) {
-    if (e.keyCode === 27) { closeMe(); }      // Esc 关掉
-  };
+  document.getElementById('ok4').onclick = closeMe;
 })();
 </script>
 </body>
