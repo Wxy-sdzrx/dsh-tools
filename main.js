@@ -40,7 +40,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.8.6';
+var DSH_VERSION = '1.8.7';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -966,7 +966,8 @@ function DSH_showUpdateDialog(L, manual) {
               '&note=' + encodeURIComponent(String(L.note || '')) +
               '&dir='  + encodeURIComponent(DSH_installDir()) +
               '&mode=' + (manual ? 'manual' : 'auto') +
-              '&url='  + encodeURIComponent(String(L.url || ''));
+              '&url='  + encodeURIComponent(String(L.url || '')) +
+              '&files=' + encodeURIComponent((L.files && L.files.length) ? L.files.join(',') : '');
     var dpr = 1;
     try { dpr = window.devicePixelRatio || 1; } catch (e) { }
     try {

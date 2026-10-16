@@ -32,6 +32,10 @@
   .btns { position: absolute; right: 16px; bottom: 12px; }
   button { padding: 5px 18px; font-size: 13px; cursor: pointer; margin-left: 8px; }
   button.primary { background: #1a7f37; color: #fff; border: 1px solid #1a7f37; border-radius: 3px; }
+  .list { margin: 9px 0 0; font-family: Consolas, "Microsoft YaHei UI", monospace; font-size: 12px;
+          color: #999; line-height: 1.75; }
+  .list .d { color: #1a7f37; }
+  .list .c { color: #111; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -73,6 +77,7 @@
   <div class="ttl">正在更新…</div>
   <div class="bar"><div id="fill"></div></div>
   <div class="st" id="st">正在启动更新器…</div>
+  <div class="list" id="list"></div>
   <div class="warn">
     若系统弹出「已拦截 / 是否允许」提示，<b>请选择【放行】或【允许】</b>，否则更新无法完成。
   </div>
@@ -128,6 +133,7 @@
 
   var curV = q('cur'), newV = q('new'), note = q('note'), dir = q('dir');
   var dlUrl = q('url');
+  var fileList = q('files') ? q('files').split(',') : [];
   document.getElementById('cur').textContent = curV || '—';
   document.getElementById('new').textContent = newV || '—';
   var noteEl = document.getElementById('note');
@@ -185,6 +191,21 @@
     try { document.head.appendChild(s); } catch (e) { cb(null); }
   }
 
+  /* 逐文件打勾。
+     为什么不用一条进度条就够：整个更新只有 2–3 秒，进度条一闪就过去了，
+     用户会觉得"界面没动"。改成每个文件一行、完成一个打一个勾 —— 2 秒里
+     也看得见真实进度，而且这是真的状态，不是假动画。 */
+  function renderList(doneCount) {
+    if (!fileList.length) { return; }
+    var h = '';
+    for (var i = 0; i < fileList.length; i++) {
+      var cls = (i < doneCount) ? 'd' : (i === doneCount ? 'c' : '');
+      var mark = (i < doneCount) ? '✓ ' : (i === doneCount ? '→ ' : '   ');
+      h += '<div class="' + cls + '">' + mark + fileList[i] + '</div>';
+    }
+    document.getElementById('list').innerHTML = h;
+  }
+
   var timer = null, t0 = 0, secs = 0;
   function setProgress(p) { document.getElementById('fill').style.width = Math.max(0, Math.min(100, p)) + '%'; }
   function setSt(t, dim) { var el = document.getElementById('st'); el.textContent = t; el.className = dim ? 'st dim' : 'st'; }
@@ -226,21 +247,25 @@
             var batPath = dir + 'update.bat';
             /* 措辞要诚实：这不是"失败"，而是这条触发路径被 WPS 拦了，还有别的路会完成。 */
             document.getElementById('errMsg').textContent =
-              '发现新版本 ' + newV + '，但 WPS 的安全机制（沙箱保护）拦截了' +
-              '插件启动更新程序 —— 这是 WPS 的正常行为，不是出错。\n\n' +
-              '如果不想关沙箱保护，请用【复制下载链接】手动安装，' +
-              '或直接双击这个文件（一样会完成）：\n' + batPath;
+              '这次没能启动更新程序 —— WPS 的「沙箱保护」拦住了。' +
+              '（这是 WPS 的正常行为，不是出错。）\n\n' +
+              '【最快的办法】双击下面这个文件，几秒就完成，不用重启任何东西：\n' +
+              batPath + '\n\n' +
+              '【或者】不管它 —— 下次开机登录时会自动完成。\n\n' +
+              '【或者】点下面的【复制下载链接】，自己下载安装包。';
           }
           return;
         }
         if (R.state === 'downloading') {
           setProgress(5 + (R.done / Math.max(1, R.total)) * 55);
           setSt('正在下载 ' + R.done + '/' + R.total + '　' + (R.file || ''));
+          renderList(R.done);
         } else if (R.state === 'installing') {
           setProgress(60 + (R.done / Math.max(1, R.total)) * 38);
           setSt('正在写入 ' + R.done + '/' + R.total + '　' + (R.file || ''));
+          renderList(R.done);
         } else if (R.state === 'done' && R.ok) {
-          clearInterval(timer); setProgress(100); show('done');
+          clearInterval(timer); setProgress(100); renderList(R.total); show('done');
           document.getElementById('doneMsg').textContent =
             (R.from === (R.to || R.from)) ? ('当前已是最新版本 ' + R.from)
                                           : ('已从 ' + R.from + ' 更新到 ' + R.to);
@@ -250,7 +275,7 @@
             (R.msg || '更新失败') + '\n\n可以改用【复制下载链接】手动安装。';
         }
       });
-    }, 700);
+    }, 300);
   }
 
   document.getElementById('go1').onclick = startUpdate;
