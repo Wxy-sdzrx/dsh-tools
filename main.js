@@ -16,7 +16,10 @@ var DSH_OPTIONS = {
                             //   2 = 千分符补/舍到两位，乘除一万也舍到两位
                             //  -1 = 千分符只加分隔符不改数值，乘除保持计算原样
                             //   0 / 4 亦可
-    autoThousands: true,    // 换算后自动补千分符
+    autoThousands: true,
+    /* 金额单位联动：÷10000 时 元→万元、×10000 时 万元→元（并沿 元/万元/亿元/万亿元 链条平移一档）。
+       为什么默认开：数字改了单位不改，金额会错 10000 倍。关掉就只改数字、不动单位。 */
+    unitConvert: true,    // 换算后自动补千分符
     skipYear: false,        // 【默认关】把 1900-2199 的裸四位数一律当年份跳过。
                             // 默认关的理由：报告里的日期都有「年/月/日」等显式标记，
                             // 已由 skipDate 覆盖；裸四位数（2024、2026）是数字，
@@ -40,7 +43,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.9.5';
+var DSH_VERSION = '1.9.6';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -188,6 +191,62 @@ var DshEngine = (function () {
         return false;
     }
 
+    /* ============ 金额单位联动 ============
+       ÷10000：元 → 万元；×10000：万元 → 元。
+       为什么要有：数字改了、单位没改，金额就错了 10000 倍。
+
+       为什么必须做成【链条】而不是只做一档：
+         这个功能的本质是"换算单位、保住金额不变"。
+         文档里若有 100万元，按 ÷10000 时数字 100→0.01，单位必须同时 万元→亿元
+         （0.01亿 = 100万元 ✓）；若只把数字除以一万而单位不动，0.01万元 = 100元 ✗ 差一万倍。
+         所以链条是 元 → 万元 → 亿元 → 万亿元，两个方向对称。
+
+       三条护栏（全是防"改错"的）：
+         ① 只认紧跟在数字后面的单位（中间允许空格），不认远处的"元"；
+         ② 外币不碰：美元/欧元/港元/日元/澳元/加元/韩元/新加坡元…（"元/万元"前一个字是外币字就跳过）。
+            特别地 "100万美元" 里的"万元"也必须跳过 —— 那是美元，不是人民币万元；
+         ③ "元"后面跟着 旦/素/气/宵/首/件/帅/老/宝 之类不成词的，不当单位（如"2024元旦"）。 */
+    var UNIT_CHAIN = ['元', '万元', '亿元', '万亿元'];
+    var UNIT_FOREIGN_PREV = '美欧港日澳加韩坡俄法德瑞英新台';
+    var UNIT_NOT_UNIT_NEXT = '旦素气宵首件帅老宝凶';
+
+    /* 找出紧跟在 pos 之后的金额单位；中间允许空格/制表符（但改动只覆盖单位本身，空格保留）。 */
+    function unitAfter(t, pos, mask) {
+        var i = pos, n = t.length;
+        while (i < n) {
+            var ch = t.charAt(i);
+            if (ch === ' ' || ch === '\t' || ch === '\u00a0' || ch === '\u3000') { i++; continue; }
+            break;
+        }
+        /* 长的先试：万亿元 → 亿元 → 万元 → 元（否则"万元"会被"元"先吃掉） */
+        for (var ci = UNIT_CHAIN.length - 1; ci >= 0; ci--) {
+            var u = UNIT_CHAIN[ci];
+            if (t.substr(i, u.length) !== u) continue;
+            var bad = false;
+            for (var k = i; k < i + u.length; k++) { if (mask[k]) { bad = true; break; } }
+            if (bad) continue;
+            var prev = i > 0 ? t.charAt(i - 1) : '';
+            /* ⚠️ 必须判 prev/next 非空：''.indexOf 会返回 0，
+               `'' && indexOf('') >= 0` 会把"单位在句首/句尾"这种情况误判成外币或非单位字。
+               这个坑栽过一次（在别处），这里差点又栽一次。 */
+            if (prev && UNIT_FOREIGN_PREV.indexOf(prev) >= 0) continue;   // 美元 / 万美元 / 欧元 …
+            if (u === '元') {
+                var next = t.charAt(i + 1) || '';
+                if (next && UNIT_NOT_UNIT_NEXT.indexOf(next) >= 0) continue;   // 元旦 / 元素 …
+            }
+            return { start: i, length: u.length, text: u };
+        }
+        return null;
+    }
+
+    /* 档位平移：div 往上一档（元→万元），mul 往下一档（万元→元）。到顶/到底就不动。 */
+    function unitShift(u, mode) {
+        var i = UNIT_CHAIN.indexOf(u);
+        if (i < 0) return null;
+        if (mode === 'mul') return i > 0 ? UNIT_CHAIN[i - 1] : null;
+        if (mode === 'div') return i < UNIT_CHAIN.length - 1 ? UNIT_CHAIN[i + 1] : null;
+        return null;      // thousands 模式不动单位
+    }
     function convertToken(t, idx, raw, mode, o) {
         var sign = '', body = raw;
         if (body.length && '–—−-'.indexOf(body.charAt(0)) >= 0) {
@@ -245,6 +304,17 @@ var DshEngine = (function () {
             var conv = convertToken(t, s, m[0], mode, o);
             if (conv !== null && conv !== m[0]) {
                 res.push({ start: s, length: len, old: m[0], neu: conv });
+                /* 金额单位联动：数字改了就顺带把紧跟其后的单位平移一档。
+                   只在【数字确实改动过】时做 —— 数字没动而改单位，等于把金额改了。 */
+                if (o.unitConvert !== false) {
+                    var u = unitAfter(t, s + len, mask);
+                    if (u) {
+                        var nu = unitShift(u.text, mode);
+                        if (nu && nu !== u.text) {
+                            res.push({ start: u.start, length: u.length, old: u.text, neu: nu, unit: true });
+                        }
+                    }
+                }
             }
         }
         return res;
@@ -556,7 +626,7 @@ async function DSH_run(mode, diagnoseOnly) {
             return;
         }
 
-        var done = 0, failed = 0, samples = [];
+        var done = 0, failed = 0, units = 0, samples = [];
         for (var i = changes.length - 1; i >= 0; i--) {
             var c = changes[i];
             try {
@@ -567,7 +637,7 @@ async function DSH_run(mode, diagnoseOnly) {
                 r.Text = c.neu;                                        // 写入
                 var back = String((await DSH_P(r, 'Text')) || '');
                 if (back !== c.neu) { failed++; continue; }             // 写回自检
-                done++;
+                if (c.unit) { units++; } else { done++; }
                 if (samples.length < 3) samples.push(c.old + ' → ' + c.neu);
             } catch (e) {
                 failed++;
@@ -583,7 +653,13 @@ async function DSH_run(mode, diagnoseOnly) {
             return;
         }
 
-        DSH_quiet(label + '：已处理 ' + done + ' 处' +
+        /* 单位换算必须报出来：数字和单位一起变了，用户不知道的话，
+           会以为只是数字变了 —— 实际是金额口径变了。 */
+        var unitNote = '';
+        if (units) {
+            unitNote = '，另换算 ' + units + ' 处单位（' + (mode === 'mul' ? '万元→元' : '元→万元/万元→亿元') + '）';
+        }
+        DSH_quiet(label + '：已处理 ' + done + ' 处' + unitNote +
             (failed ? '，跳过 ' + failed + ' 处' : '') +
             (samples.length ? '（如 ' + samples.join('；') + '）' : ''));
     } catch (e) {
@@ -643,7 +719,7 @@ async function DSH_runTable(app, doc, sel, cells, count, mode, diagnoseOnly, dia
         return;
     }
 
-    var done = 0, failed = 0, samples = [];
+    var done = 0, failed = 0, units = 0, samples = [];
     for (i = jobs.length - 1; i >= 0; i--) {
         var job = jobs[i];
         for (var k = job.changes.length - 1; k >= 0; k--) {
@@ -656,7 +732,7 @@ async function DSH_runTable(app, doc, sel, cells, count, mode, diagnoseOnly, dia
                 rr.Text = c.neu;
                 var back = String((await DSH_P(rr, 'Text')) || '');
                 if (back !== c.neu) { failed++; continue; }
-                done++;
+                if (c.unit) { units++; } else { done++; }
                 if (samples.length < 3) samples.push(c.old + ' → ' + c.neu);
             } catch (e) {
                 failed++;

@@ -1,4 +1,4 @@
-﻿<customUI onLoad="dshRibbonLoad">
+<customUI onLoad="dshRibbonLoad">
   <ribbon startFromScratch="false">
     <tabs>
       <tab id="dshTab" label="便捷插件">
@@ -10,11 +10,11 @@
           <button id="dshBtnMul" label="乘以一万"
                   onAction="dshMultiply"
                   screentip="所有数字 ×10000"
-                  supertip="把万元口径换成元口径。" />
+                  supertip="把万元口径换成元口径：数字 ×10000，紧跟其后的单位同步换算（万元→元、亿元→万元）。" />
           <button id="dshBtnDiv" label="除以一万"
                   onAction="dshDivide"
                   screentip="所有数字 ÷10000"
-                  supertip="把元口径换成万元口径。" />
+                  supertip="把元口径换成万元口径：数字 ÷10000，紧跟其后的单位同步换算（元→万元、万元→亿元）。外币（美元等）单位不动。" />
         </group>
         <group id="dshSeqGroup" label="序号">
           <button id="dshBtnSeq" label="填充序号"
