@@ -43,7 +43,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.9.7';
+var DSH_VERSION = '1.9.9';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -490,7 +490,15 @@ var DshEngine = (function () {
     };
 })();
 
-if (typeof module !== 'undefined' && module.exports) { module.exports = DshEngine; }
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = DshEngine;
+    /* 把两个"打开对话框"的胶水函数也导出去 —— 好让 Node 测试用一个假的 wps 对象
+       真的调用它们。这层代码原先零覆盖：2026-10-19 因为 DSH_showUpdateDialog 里
+       误引用了对话框页才有的 q 变量（ReferenceError 被 try/catch 吞掉），
+       表现为"对话框从来不弹、永远退回系统弹窗"，而 261 项测试全绿。 */
+    module.exports.DSH_showUpdateDialog = DSH_showUpdateDialog;
+    module.exports.DSH_showResultDialog = DSH_showResultDialog;
+}
 
 /* ======================= WPS 侧胶水 ======================= */
 
@@ -1071,8 +1079,14 @@ function DSH_showUpdateDialog(L, manual) {
         if (window.wps && typeof wps.ShowDialog === 'function') {
             /* 尺寸按【真实渲染】定：ask 页内容约 264px、work 页（8 行文件列表）约 257px。
                早前按错误画布估小了，导致"方式二"整行被裁 —— 那是尺寸算错，不是布局错。 */
-            var szUp = (q === 'work') ? [424, 270] : [424, 280];
-            wps.ShowDialog(url, '检查更新', Math.round(szUp[0] * dpr), Math.round(szUp[1] * dpr), true);
+            /* 尺寸按【真实渲染】定：ask 页内容约 264px、work 页（8 行文件列表）约 257px。
+               窗口尺寸在 ShowDialog 时一次定死、之后不能改，所以取"最高那一页"280，两页都装得下。
+               ⚠️ 2026-10-19 踩过的坑：这里原本写的是 `q === 'work'` 想按页区分，
+                  但 q 是【对话框页面里】的函数，main.js 里根本没有它 ——
+                  于是抛 ReferenceError，被外层 try/catch 吞掉，函数返回 false，
+                  表现为"对话框从来不弹、永远退回系统弹窗"，而 261 项测试一条都没红。
+                  胶水层现在有测试覆盖了（见 tests-wps 的"对话框打开函数"一节）。 */
+            wps.ShowDialog(url, '检查更新', Math.round(424 * dpr), Math.round(280 * dpr), true);
             return true;
         }
     } catch (e) { }
