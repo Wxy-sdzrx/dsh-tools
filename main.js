@@ -18,8 +18,8 @@ var DSH_OPTIONS = {
                             //   0 / 4 亦可
     autoThousands: true,
     /* 金额单位联动：÷10000 时 元→万元、×10000 时 万元→元（并沿 元/万元/亿元/万亿元 链条平移一档）。
-       为什么默认开：数字改了单位不改，金额会错 10000 倍。关掉就只改数字、不动单位。 */
-    unitConvert: true,    // 换算后自动补千分符
+       默认【关】：不带"（改单位）"的那个按键就是它。带"（改单位）"的按键会按次打开。这样任何漏传参的路径都是老行为。 */
+    unitConvert: false,    // 换算后自动补千分符
     skipYear: false,        // 【默认关】把 1900-2199 的裸四位数一律当年份跳过。
                             // 默认关的理由：报告里的日期都有「年/月/日」等显式标记，
                             // 已由 skipDate 覆盖；裸四位数（2024、2026）是数字，
@@ -43,7 +43,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.9.6';
+var DSH_VERSION = '1.9.7';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -560,7 +560,23 @@ async function DSH_emitToDoc(doc, text) {
     return false;
 }
 
-async function DSH_run(mode, diagnoseOnly) {
+/* 按次覆盖的选项：某一次操作专用。null = 用 DSH_OPTIONS。
+   为什么用模块级变量而不是层层传参：选项要在 compute() 里被读到，
+   从功能区回传到那里要穿过 DSH_run → DSH_runNumbers/DSH_runTable → compute 四层，
+   层层加参数既啰嗦、又极容易漏一处 —— 而漏一处就是【静默用错选项】。
+   只在 DSH_run 里设置、finally 里还原，作用域就被限制在"一次点击"内。 */
+var DSH_RUN_OPT = null;
+
+function DSH_effOpts() {
+    if (!DSH_RUN_OPT) return DSH_OPTIONS;
+    var o = {}, k;
+    for (k in DSH_OPTIONS) { if (Object.prototype.hasOwnProperty.call(DSH_OPTIONS, k)) o[k] = DSH_OPTIONS[k]; }
+    for (k in DSH_RUN_OPT) { if (Object.prototype.hasOwnProperty.call(DSH_RUN_OPT, k)) o[k] = DSH_RUN_OPT[k]; }
+    return o;
+}
+async function DSH_run(mode, diagnoseOnly, unitConvert) {
+    var prevOpt = DSH_RUN_OPT;
+    DSH_RUN_OPT = (typeof unitConvert === 'boolean') ? { unitConvert: unitConvert } : null;
     var diag = [];
     diag.push('版本=' + DSH_VERSION);
     diag.push('wps 对象=' + (typeof wps !== 'undefined' ? '有' : '无'));
@@ -609,7 +625,7 @@ async function DSH_run(mode, diagnoseOnly) {
         basePos = Number((await DSH_P(target, 'Start')) || 0);
         diag.push('文本长度=' + text.length);
 
-        var changes = DshEngine.compute(text, mode, DSH_OPTIONS);
+        var changes = DshEngine.compute(text, mode, DSH_effOpts());
         diag.push('可处理处数=' + changes.length);
 
         if (diagnoseOnly) {
@@ -670,6 +686,11 @@ async function DSH_run(mode, diagnoseOnly) {
                 if (d2) await DSH_emitToDoc(d2, '\n【便捷插件·出错】\n' + msg + '\n');
             } catch (e2) { }
         }
+    } finally {
+        /* 一次点击用完就还原：作用域严格限制在本次操作内。
+           虽然现在每个回调都显式传了 true/false，但还原不能省 ——
+           将来任何一处漏传，stale 的 true 会让"不改单位"的按键偷偷改单位。 */
+        DSH_RUN_OPT = prevOpt;
     }
 }
 
@@ -695,7 +716,7 @@ async function DSH_runTable(app, doc, sel, cells, count, mode, diagnoseOnly, dia
         var part = await DSH_R(doc.Range(a, b));
         if (!part) continue;
         var t = String((await DSH_P(part, 'Text')) || '');
-        var ch = DshEngine.compute(t, mode, DSH_OPTIONS);
+        var ch = DshEngine.compute(t, mode, DSH_effOpts());
         total += ch.length;
         if (ch.length) jobs.push({ base: a, changes: ch, text: t });
     }
@@ -1176,10 +1197,17 @@ function DSH_notifyUpdate(L, autoFailed) {
 }
 
 /* ----------------------- 功能区回调（顶层声明 => 全局可见） ----------------------- */
-function dshThousands() { DSH_run('thousands', false); return true; }
-function dshMultiply() { DSH_run('mul', false); return true; }
-function dshDivide() { DSH_run('div', false); return true; }
-function dshDiagnose() { DSH_run('thousands', true); return true; }
+/* 功能区分两类（用户要求分开成两个按键）：
+   · 不带"（改单位）"：只改数字，单位原样不动 —— 老行为。
+   · 带"（改单位）"：数字与紧跟其后的金额单位一起换算，金额本身不变。
+   默认走"不改单位"（unitConvert 显式传 false），
+   这样任何漏传参的路径拿到的都是老行为，不会悄悄把单位改掉。 */
+function dshThousands() { DSH_run('thousands', false, false); return true; }
+function dshMultiply() { DSH_run('mul', false, false); return true; }
+function dshDivide() { DSH_run('div', false, false); return true; }
+function dshMultiplyUnit() { DSH_run('mul', false, true); return true; }
+function dshDivideUnit() { DSH_run('div', false, true); return true; }
+function dshDiagnose() { DSH_run('thousands', true, false); return true; }
 
 /* --- 填充序号：动作 + 格式菜单 --- */
 function dshFillSequence() { DSH_fillSequence(); return true; }

@@ -9,13 +9,20 @@
                   supertip="选中区域优先，未选中则处理整篇正文。自动跳过年份、日期、文号、章节号、百分比。" />
           <button id="dshBtnMul" label="乘以一万"
                   onAction="dshMultiply"
-                  screentip="所有数字 ×10000"
-                  supertip="把万元口径换成元口径：数字 ×10000，紧跟其后的单位同步换算（万元→元、亿元→万元）。" />
+                  screentip="所有数字 ×10000（单位不动）"
+                  supertip="只把数字 ×10000，紧跟其后的单位原样不动。需要连单位一起换算，用右边的「乘以一万（改单位）」。" />
+          <button id="dshBtnMulU" label="乘以一万（改单位）"
+                  onAction="dshMultiplyUnit"
+                  screentip="×10000，并把单位一起换算"
+                  supertip="数字 ×10000，紧跟其后的金额单位同步换算（万元→元、亿元→万元），金额本身不变。外币（美元等）单位不动。" />
           <button id="dshBtnDiv" label="除以一万"
                   onAction="dshDivide"
-                  screentip="所有数字 ÷10000"
-                  supertip="把元口径换成万元口径：数字 ÷10000，紧跟其后的单位同步换算（元→万元、万元→亿元）。外币（美元等）单位不动。" />
-        </group>
+                  screentip="所有数字 ÷10000（单位不动）"
+                  supertip="只把数字 ÷10000，紧跟其后的单位原样不动。需要连单位一起换算，用右边的「除以一万（改单位）」。" />
+          <button id="dshBtnDivU" label="除以一万（改单位）"
+                  onAction="dshDivideUnit"
+                  screentip="÷10000，并把单位一起换算"
+                  supertip="数字 ÷10000，紧跟其后的金额单位同步换算（元→万元、万元→亿元），金额本身不变。外币（美元等）单位不动。" />        </group>
         <group id="dshSeqGroup" label="序号">
           <button id="dshBtnSeq" label="填充序号"
                   onAction="dshFillSequence"
