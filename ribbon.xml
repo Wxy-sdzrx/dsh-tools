@@ -2,36 +2,56 @@
   <ribbon startFromScratch="false">
     <tabs>
       <tab id="dshTab" label="便捷插件">
-        <group id="dshGroup" label="数字工具">
+        <!-- 布局（2026-10-20 用户要求，两次返工后定案）：
+             实际渲染（WPS 实测截图）：
+                 第一行  千分符  |  乘以一万      |  除以一万
+                 第二行           |  乘以一万(改)  |  除以一万(改)
+             —— 两列两行，乘除严格对齐，行与行之间留白。
+
+             三条都必须是"【不做】"，少一条就排错：
+             ① 拆成三个组 —— 组是天然的分列边界。组内是"每列最多 3 行、
+                自上而下填满再换列"，5 个按钮塞一组会排成
+                千分符-乘以一万-乘以一万（改单位），乘除错开成对角线。
+             ② 不能用 size="large" —— WPS 会把所有大号按钮排成一条横排
+                （2026-10-20 实测：千分符后面五个大按钮一字排开，与需求完全相反）。
+             ③ 不能加 <separator> —— WPS 遇到分隔符会改成水平排列，
+                整排按钮又挤成一行（2026-10-20 实测，同样与需求相反）。
+                行距靠"每个组两个按钮 + 组自带行距"自然形成，不要手动撑。 -->
+        <group id="dshThousandGroup" label="千分符">
           <button id="dshBtnThousand" label="千分符"
                   onAction="dshThousands"
                   screentip="给数字加千分位分隔符"
-                  supertip="选中区域优先，未选中则处理整篇正文。自动跳过年份、日期、文号、章节号、百分比。" />
+                  supertip="选中区域优先，未选中则处理整篇正文；光标/选区挨着数字时只处理该完整数字。自动跳过年份、日期、文号、章节号、百分比。" />
+        </group>
+        <group id="dshMulGroup" label="乘以一万">
           <button id="dshBtnMul" label="乘以一万"
                   onAction="dshMultiply"
                   screentip="所有数字 ×10000（单位不动）"
-                  supertip="只把数字 ×10000，紧跟其后的单位原样不动。需要连单位一起换算，用右边的「乘以一万（改单位）」。" />
+                  supertip="只把数字 ×10000，紧跟其后的单位原样不动。需要连单位一起换算，用下面的「乘以一万（改单位）」。光标/选区挨着数字时只处理该完整数字。" />
           <button id="dshBtnMulU" label="乘以一万（改单位）"
                   onAction="dshMultiplyUnit"
                   screentip="×10000，并把单位一起换算"
-                  supertip="数字 ×10000，紧跟其后的金额单位同步换算（万元→元、亿元→万元），金额本身不变。外币（美元等）单位不动。" />
+                  supertip="数字 ×10000，紧跟其后的金额单位同步换算（万元→元、亿元→万元），金额本身不变；没有单位的默认按「元」处理并补上单位。外币（美元等）也会跟着换档（万美元→亿美元）。光标/选区挨着数字时只处理该完整数字。" />
+        </group>
+        <group id="dshDivGroup" label="除以一万">
           <button id="dshBtnDiv" label="除以一万"
                   onAction="dshDivide"
                   screentip="所有数字 ÷10000（单位不动）"
-                  supertip="只把数字 ÷10000，紧跟其后的单位原样不动。需要连单位一起换算，用右边的「除以一万（改单位）」。" />
+                  supertip="只把数字 ÷10000，紧跟其后的单位原样不动。需要连单位一起换算，用下面的「除以一万（改单位）」。光标/选区挨着数字时只处理该完整数字。" />
           <button id="dshBtnDivU" label="除以一万（改单位）"
                   onAction="dshDivideUnit"
                   screentip="÷10000，并把单位一起换算"
-                  supertip="数字 ÷10000，紧跟其后的金额单位同步换算（元→万元、万元→亿元），金额本身不变。外币（美元等）单位不动。" />        </group>
+                  supertip="数字 ÷10000，紧跟其后的金额单位同步换算（元→万元、万元→亿元），金额本身不变；没有单位的默认按「元」处理并补上单位。外币（美元等）单位不动。光标/选区挨着数字时只处理该完整数字。" />
+        </group>
         <group id="dshSeqGroup" label="序号">
           <button id="dshBtnSeq" label="填充序号"
                   onAction="dshFillSequence"
-                  screentip="在表格中从上到下填充序号"
-                  supertip="先在表格中选中一列（或一段连续单元格）。选区里已经有序号的格子不动，只补空白格，并从最后一个序号接着往下排。" />
+                  screentip="表格选一列 / 正文选几段，填序号"
+                  supertip="【表格】选中一列（或连续单元格）：空单元格按顺序补号，已有编号保留原值只重套格式，表头文字格不动。【正文】从段首开始选中若干段落：按段落顺序编号，段首已有「1、」「（一）」的会被替换成当前格式，空行跳过不占号，表格内段落不动。" />
           <menu id="dshSeqMenu" label="序号格式"
                 getLabel="dshSeqMenuLabel"
                 screentip="选择填充序号时使用的格式"
-                supertip="点开选择。当前格式会显示在按钮上。">
+                supertip="点开选择。当前格式会显示在按钮上。正文里，「1 2 3」「一 二 三」「A B C」这类不带分隔符的格式会自动补顿号（1、 一、 A、），否则序号会和正文第一个字黏在一起。">
             <button id="dshSeqFmt0" label="1   2   3"         onAction="dshSeqPick0" />
             <button id="dshSeqFmt1" label="01   02   03"      onAction="dshSeqPick1" />
             <button id="dshSeqFmt2" label="1、  2、  3、"      onAction="dshSeqPick2" />

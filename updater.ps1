@@ -128,6 +128,16 @@ if (-not $remoteVer -or -not $base) {
     Say '清单字段不全（缺 version 或 base），退出'; exit 0
 }
 if (-not $base.EndsWith('/')) { $base += '/' }
+# base 也来自远程清单 —— 校验它与清单同一主机，否则清单能把文件指到别处去
+try {
+    $baseHost = ([regex]::Match($base, '^(https?://)([^/]+)')).Groups[2].Value
+    $manHost  = ([regex]::Match($manifestUrl, '^(https?://)([^/]+)')).Groups[2].Value
+    if ($baseHost -and $manHost -and $baseHost -ne $manHost) {
+        Write-Status -State 'error' -From $localVer -Msg '清单里的下载地址与清单不同主机，拒绝更新'
+        Say ('清单里的 base 主机与清单主机不同（' + $baseHost + ' vs ' + $manHost + '），拒绝更新')
+        exit 0
+    }
+} catch { }
 
 $files = @()
 if ($filesM.Success) {
@@ -136,6 +146,31 @@ if ($filesM.Success) {
                Where-Object { $_ })
 }
 if ($files.Count -eq 0) { $files = @('index.html', 'main.js', 'ribbon.xml', 'dialog_sum.html', 'updater.ps1') }
+
+# ---------- 文件名白名单（2026-10-20 质检 Q-03）----------
+# 远程版本清单是【不可信输入】：它决定"下载什么、覆盖什么、写到哪"。
+# 直接拿清单里的文件名拼路径，清单里带 ".." 就能写到目标目录之外 ——
+# 那等于把托管账号变成任意写文件。
+# 所以只接受"纯文件名"：字母数字、下划线、点、短横线，且不许是 . 或 ..。
+# 不合法的项剔除并记一笔（不中止整个更新——其余文件仍然有效）。
+$Rejected = @()
+$filesSafe = @()
+foreach ($f in $files) {
+    if ($f -match '^[A-Za-z0-9._-]+$' -and $f -notmatch '^\.\.?$') {
+        $filesSafe += $f
+    } else {
+        $Rejected += $f
+    }
+}
+if ($Rejected.Count) {
+    Say ('清单里有不合法的文件名，已剔除（防止写到目录外）：' + ($Rejected -join ', '))
+    Write-Status -State 'error' -From $localVer -Msg ('清单里有不合法的文件名，已剔除：' + ($Rejected -join ','))
+}
+$files = @($filesSafe | Where-Object { $_ })
+if ($files.Count -eq 0) {
+    Say '清单里没有任何可用的文件名，退出'
+    exit 0
+}
 
 function CmpVer([string]$a, [string]$b) {
     $pa = $a.Split('.'); $pb = $b.Split('.')
@@ -207,6 +242,41 @@ foreach ($f in $files) {
 }
 
 Cleanup
+
+# ---------- 5b 把 main.js 里的加载项目录名钉死成本目录 ----------
+# 为什么必须做这一步（2026-10-22 质检 P1-01）：
+#   main.js 里有一句  DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION
+#   而自动更新是【就地覆盖】：目录名还是旧的（BianjieTools_1.11.5），
+#   版本号却变成了 1.11.6 —— 于是 DSH_ADDON_DIR 指向一个【不存在的目录】。
+#   区域求和对话框在算 base 路径时有一条兜底分支用它，
+#   拿不到真实目录就会复现 ERR_FILE_NOT_FOUND 白屏（v1.11.4 刚修好的那个坑）。
+#
+#   修法：覆盖完 main.js 后，把这个常量改写成【当前目录的真实名字】。
+#   改写后「代码版本」与「目录名」彻底解耦：升级在哪个目录，目录名就是哪个。
+#   —— 幂等：已经钉死过的，匹配到同样的文本，改写后无变化。
+#
+#   ⚠️ publish.xml 的 version 【不动】：它描述的是【加载项目录】，
+#      就地升级时目录没变，改了反而会让它指向不存在的版本。
+$addonDirName = Split-Path $Here -Leaf
+$mainJsPath   = Join-Path $Here 'main.js'
+if (Test-Path $mainJsPath) {
+    try {
+        $txt = [System.IO.File]::ReadAllText($mainJsPath, [System.Text.Encoding]::UTF8)
+        $lit = $addonDirName.Replace('\', '\\').Replace("'", "\'")
+        $new = [regex]::Replace($txt, "DSH_ADDON_DIR\s*=\s*'[^']*'(\s*\+\s*DSH_VERSION)?", ("DSH_ADDON_DIR = '" + $lit + "'"))
+        if ($new -ne $txt) {
+            # 用带 BOM 的 UTF-8 写回：main.js 本来就带 BOM，掉了会让 WPS 里的中文注释乱码
+            [System.IO.File]::WriteAllText($mainJsPath, $new, (New-Object System.Text.UTF8Encoding($true)))
+            Say ('已把 DSH_ADDON_DIR 钉死为 ' + $addonDirName)
+            Write-Status -State 'installing' -From $localVer -To $remoteVer -Done $files.Count -Total $files.Count -Msg ('已更新，加载项目录 ' + $addonDirName)
+        } else {
+            Say 'DSH_ADDON_DIR 已是当前目录名，无需改写'
+        }
+    } catch {
+        Say ('DSH_ADDON_DIR 修正失败（不影响本次更新）: ' + $_.Exception.Message)
+    }
+}
+
 Write-Status -State 'done' -Ok $true -From $localVer -To $remoteVer -Done $files.Count -Total $files.Count -Msg '更新完成'
 Say ('更新完成 ' + $localVer + ' -> ' + $remoteVer)
 exit 0

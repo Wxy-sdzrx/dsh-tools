@@ -254,13 +254,20 @@
 
   function renderList(doneCount) {
     if (!fileList.length) { return; }
-    var h = '';
+    /* ⚠️ 不用 innerHTML 拼字符串（2026-10-20 质检 Q-03）：
+       fileList 来自【远程版本清单】，是不可信输入 ——
+       拼进 innerHTML 就等于让远程内容在这个页面里当 HTML 执行。
+       改用 DOM API 逐条建节点，文件名只当【文本】处理。 */
+    var box = document.getElementById('list');
+    while (box.firstChild) { box.removeChild(box.firstChild); }
     for (var i = 0; i < fileList.length; i++) {
       var cls = (i < doneCount) ? 'd' : (i === doneCount ? 'c' : '');
       var mark = (i < doneCount) ? '✓ ' : (i === doneCount ? '→ ' : '   ');
-      h += '<div class="' + cls + '">' + mark + fileList[i] + '</div>';
+      var row = document.createElement('div');
+      if (cls) { row.className = cls; }
+      row.appendChild(document.createTextNode(mark + fileList[i]));
+      box.appendChild(row);
     }
-    document.getElementById('list').innerHTML = h;
   }
 
   var timer = null, t0 = 0, secs = 0;

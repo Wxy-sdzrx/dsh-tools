@@ -19,7 +19,9 @@ var DSH_OPTIONS = {
     autoThousands: true,
     /* 金额单位联动：÷10000 时 元→万元、×10000 时 万元→元（并沿 元/万元/亿元/万亿元 链条平移一档）。
        默认【关】：不带"（改单位）"的那个按键就是它。带"（改单位）"的按键会按次打开。这样任何漏传参的路径都是老行为。 */
-    unitConvert: false,    // 换算后自动补千分符
+    unitConvert: false,    // 【默认关】只有「（改单位）」按键按次打开
+                           // 打开时：有金额单位 → 沿链条换算；没有单位 → 默认按「元」处理，
+                           // 算完补上单位（÷10000 补「万元」，×10000 补「元」）
     skipYear: false,        // 【默认关】把 1900-2199 的裸四位数一律当年份跳过。
                             // 默认关的理由：报告里的日期都有「年/月/日」等显式标记，
                             // 已由 skipDate 覆盖；裸四位数（2024、2026）是数字，
@@ -43,7 +45,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.9.9';
+var DSH_VERSION = '1.11.8';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -76,6 +78,17 @@ var DshEngine = (function () {
         if (o.skipLongDigits) {
             var n = o.longDigitMin || 15;
             p.push(new RegExp('\\d{' + n + ',}', 'g'));      // 兜底：15 位以上纯数字一律不动
+            /* ⚠️ 必须同时管住【带千分位分隔符】的长数字（2026-10-20 质检 Q-02，P0）：
+               上面的 \d{15,} 匹配的是"连续数字"，而 110,101,199,003,071,234 这种
+               被逗号隔开 —— 逗号把数字串切断了，正则匹配不到，
+               于是 18 位身份证（Excel 粘贴时自带千分位）就逃过了保护，
+               被加上千分位和小数位。
+               下面这条按"去掉分隔符后的位数"判定：\d{1,3}(,\d{3}){4,} 即 15 位以上。
+               注意它也覆盖"带分隔符的手机号"（如 138,001,38000）。 */
+            /* 位数换算：每组 3 位。n=15 → 5 组 → 首组 + 后面 4 组起。
+               （写成 ceil(n/3) 会多要一组，15 位反而拦不住 —— 这次踩过。） */
+            var groups = Math.ceil(n / 3);                  // 15 → 5 组
+            p.push(new RegExp('\\d{1,3}(?:,\\d{3}){' + Math.max(1, groups - 1) + ',}', 'g'));
             p.push(/\d{3,4}\s*[-–—]\s*\d{7,8}/g);
             p.push(/1[3-9]\d{9}/g);
         }
@@ -203,50 +216,200 @@ var DshEngine = (function () {
 
        三条护栏（全是防"改错"的）：
          ① 只认紧跟在数字后面的单位（中间允许空格），不认远处的"元"；
-         ② 外币不碰：美元/欧元/港元/日元/澳元/加元/韩元/新加坡元…（"元/万元"前一个字是外币字就跳过）。
-            特别地 "100万美元" 里的"万元"也必须跳过 —— 那是美元，不是人民币万元；
+         ② 外币与人民币走同一套换档规则，但币种词必须【整词】匹配：
+            "100万美元" 里的"万元"是美元，不是人民币万元 —— 靠整词匹配才分得开；
          ③ "元"后面跟着 旦/素/气/宵/首/件/帅/老/宝 之类不成词的，不当单位（如"2024元旦"）。 */
-    var UNIT_CHAIN = ['元', '万元', '亿元', '万亿元'];
-    var UNIT_FOREIGN_PREV = '美欧港日澳加韩坡俄法德瑞英新台';
+    /* 「元」后面跟着不成词的字（元旦/元素…），不当单位 */
     var UNIT_NOT_UNIT_NEXT = '旦素气宵首件帅老宝凶';
 
-    /* 找出紧跟在 pos 之后的金额单位；中间允许空格/制表符（但改动只覆盖单位本身，空格保留）。 */
-    function unitAfter(t, pos, mask) {
+    /* ============ 外币同样要换档（2026-10-20 用户报障）============
+       之前的外币规则是"单位一个字都不碰"，那只保住了"美元"这个词，
+       数字却照乘一万 —— 金额照样变一万倍（实测 100万美元 → 1,000,000.00万美元 ❌）。
+       用户的原话：「外币，对应数字也变化，无非就是万美元还是亿美元的变化」——
+       也就是说外币和人民币遵守同一套规则，只是档位名字不同：
+           美元 → 万美元 → 亿美元 → 万亿美元
+           欧元 → 万欧元 → 亿欧元 ……
+       做法：把"币种"和"档位"拆开。币种（美元/欧元…）原样保留，
+       只在它前面那个"万/亿/万亿"档位词上平移；没有档位词就补一个。
+       链到头（×10000 遇到光杆"美元"）与人民币同规则：数字与单位一起不动。
+
+       【2026-10-22 清理】原来这里还有一套独立的外币实现
+       （FX_CUR / FX_SCALE / fxAfter / fxShift），口径与人民币不一致，
+       已被下面统一的 parseUnit 取代，现已删除 —— 留着只会让人以为有两套规则。
+       档位指数（万=4 亿=8 万亿=12）与外币共用，见 SCALE_EXP。 */
+
+    /* 币种词的完整写法。必须整词匹配 —— 早期版本只认单字，
+       于是「新加坡元」被当成「新」+「加坡元」，换档时写出「万新」，
+       把「加坡元」直接吃掉（实测，用户报障后自查发现）。
+       长的先试，否则「新加坡元」会先命中「新加坡」。 */
+    var FX_WORDS = ['新加坡元', '新台币', '新加坡币', '人民币', '美元', '欧元', '港元', '日元',
+                    '澳元', '加元', '韩元', '坡币', '卢布', '卢比', '法郎', '马克', '英镑',
+                    '瑞郎', '台币', '美金', '英镑'];
+
+    /* 在 pos 处匹配一个币种词（不带档位词）；返回 {word, len} 或 null */
+    function fxWordAt(t, pos) {
+        var best = null;
+        for (var i = 0; i < FX_WORDS.length; i++) {
+            var w = FX_WORDS[i];
+            if (t.substr(pos, w.length) !== w) continue;
+            if (!best || w.length > best.len) best = { word: w, len: w.length };
+        }
+        return best;
+    }
+
+    /* ============ 统一的金额单位解析（2026-10-20 质检 Q-01 / Q-05 整改）============
+       原来人民币和外币各写一套"找单位"的逻辑，两套的匹配口径还不一样：
+         · 人民币 unitAfter：把单位锚定在数字【之后立刻匹配】
+         · 外币   fxAfter（已删）：先找档位词、再找币种词
+       于是"两档连写"的金额单位（万万元 / 亿万）在人民币链上根本认不出来
+       → 走裸数字分支 → 数字乘一万而单位一字不动 → 金额凭空变一万倍
+       （实测 100万万元 → 1,000,000.00万万元 ❌）。
+       外币链因为口径不同，"亿美元万"却能正确换档 —— 同一类输入两种结果。
+
+       整改：合成【一套】解析，人民币与外币共用。
+         单位 = 档位词（可组合）+ 币种词
+         档位用【指数】表示，不再用固定四档：
+             元=0 · 万=4 · 亿=8 · 万亿=12 · 万万元=8（万×万=10^8）
+         平移就是指数 ±4（÷10000 / ×10000 恰好一档）。
+         这样"万万元"与"亿元"落在同一个指数上，行为自然一致。 */
+    var SCALE_EXP = { '': 0, '万': 4, '亿': 8, '万亿': 12 };   // 单个档位词 → 指数
+    var SCALE_WORDS = ['万亿', '亿', '万'];                       // 长的先试
+    var CNY_WORD = '元';
+
+    /* 读档位词（可组合）：万万元 → 万(4)+万(4)=8；亿万 → 亿(8)+万(4)=12。
+       至多读两个，再多就不是金额单位了（那是乱写）。 */
+    function readScale(t, pos) {
+        var exp = 0, len = 0, count = 0;
+        while (count < 2) {
+            var hit = null;
+            for (var i = 0; i < SCALE_WORDS.length; i++) {
+                var w = SCALE_WORDS[i];
+                if (t.substr(pos + len, w.length) === w) { hit = w; break; }
+            }
+            if (!hit) break;
+            exp += SCALE_EXP[hit];
+            len += hit.length;
+            count++;
+        }
+        return { exp: exp, len: len };
+    }
+
+    /* 匹配币种词：先试外币整词（长优先），再试「元」。 */
+    function curWordAt(t, pos) {
+        var w = fxWordAt(t, pos);
+        if (w) return { word: w.word, len: w.len, fx: true };
+        if (t.charAt(pos) === CNY_WORD) return { word: CNY_WORD, len: 1, fx: false };
+        return null;
+    }
+
+    /* 找出紧跟 pos 之后的金额单位（人民币或外币，统一口径）。
+       返回 {start, length, text, exp, fx, curStart, curLen} 或 null。 */
+    function parseUnit(t, pos, mask) {
         var i = pos, n = t.length;
         while (i < n) {
             var ch = t.charAt(i);
             if (ch === ' ' || ch === '\t' || ch === '\u00a0' || ch === '\u3000') { i++; continue; }
             break;
         }
-        /* 长的先试：万亿元 → 亿元 → 万元 → 元（否则"万元"会被"元"先吃掉） */
-        for (var ci = UNIT_CHAIN.length - 1; ci >= 0; ci--) {
-            var u = UNIT_CHAIN[ci];
-            if (t.substr(i, u.length) !== u) continue;
-            var bad = false;
-            for (var k = i; k < i + u.length; k++) { if (mask[k]) { bad = true; break; } }
-            if (bad) continue;
-            var prev = i > 0 ? t.charAt(i - 1) : '';
-            /* ⚠️ 必须判 prev/next 非空：''.indexOf 会返回 0，
-               `'' && indexOf('') >= 0` 会把"单位在句首/句尾"这种情况误判成外币或非单位字。
-               这个坑栽过一次（在别处），这里差点又栽一次。 */
-            if (prev && UNIT_FOREIGN_PREV.indexOf(prev) >= 0) continue;   // 美元 / 万美元 / 欧元 …
-            if (u === '元') {
-                var next = t.charAt(i + 1) || '';
-                if (next && UNIT_NOT_UNIT_NEXT.indexOf(next) >= 0) continue;   // 元旦 / 元素 …
-            }
-            return { start: i, length: u.length, text: u };
+        var sc = readScale(t, i);
+        var cw = curWordAt(t, i + sc.len);
+        if (!cw) return null;                       // 没有币种词 → 不是金额单位
+        var start = i, end = i + sc.len + cw.len;
+        if (mask) {
+            for (var k = start; k < end; k++) { if (mask[k]) return null; }
         }
+        /* 人民币的「元」后面若跟着不成词的字（元旦/元素），不当单位 */
+        if (!cw.fx && cw.word === CNY_WORD) {
+            var nx = t.charAt(end) || '';
+            if (nx && UNIT_NOT_UNIT_NEXT.indexOf(nx) >= 0) return null;
+        }
+        return { start: start, length: end - start, text: t.slice(start, end),
+                 exp: sc.exp, fx: cw.fx, curStart: start + sc.len, curLen: cw.len };
+    }
+
+    /* 数字后面有没有档位词（万/亿/万亿）？用于判定"有金额痕迹但凑不出单位"。 */
+    function hasScaleWord(t, pos) {
+        var i = pos, n = t.length;
+        while (i < n) {
+            var ch = t.charAt(i);
+            if (ch === ' ' || ch === '\t' || ch === '\u00a0' || ch === '\u3000') { i++; continue; }
+            break;
+        }
+        for (var k = 0; k < SCALE_WORDS.length; k++) {
+            if (t.substr(i, SCALE_WORDS[k].length) === SCALE_WORDS[k]) return true;
+        }
+        return false;
+    }
+
+    /* 档位平移：指数 ±4（一档 = 一万）。
+       到顶（exp=0 且 mul）或到底（exp=12 且 div）返回 null = 链到头。 */
+    function expShift(exp, mode) {
+        var next;
+        if (mode === 'mul') next = exp - 4;
+        else if (mode === 'div') next = exp + 4;
+        else return null;
+        if (next < 0 || next > 12) return null;    // 链到头
+        return next;
+    }
+
+    /* 指数写回成档位词：12→万亿 8→亿 4→万 0→空 */
+    function expToScale(exp) {
+        if (exp === 12) return '万亿';
+        if (exp === 8) return '亿';
+        if (exp === 4) return '万';
+        if (exp === 0) return '';
         return null;
     }
 
-    /* 档位平移：div 往上一档（元→万元），mul 往下一档（万元→元）。到顶/到底就不动。 */
-    function unitShift(u, mode) {
-        var i = UNIT_CHAIN.indexOf(u);
-        if (i < 0) return null;
-        if (mode === 'mul') return i > 0 ? UNIT_CHAIN[i - 1] : null;
-        if (mode === 'div') return i < UNIT_CHAIN.length - 1 ? UNIT_CHAIN[i + 1] : null;
-        return null;      // thousands 模式不动单位
+    /* 判断这段文本里是否存在"数字 + 链条尽头单位"的组合。
+       用途：点（改单位）按键却一处没改时，区分【有意的保护】（链到头）
+       与【插件没干活】—— 前者要告诉用户为什么，后者才是真故障。 */
+    function hasUnitAtChainEnd(t) {
+        if (!t) return false;
+        var rx = /[-–—−]?\d[\d,]*(?:\.\d+)?/g, m;
+        while ((m = rx.exec(t)) !== null) {
+            var pos = m.index + m[0].length;
+            var un = parseUnit(t, pos, null);
+            if (!un) continue;
+            /* exp=0 → 已在最底档（×10000 到头）；exp=12 → 已在最高档（÷10000 到头） */
+            if (un.exp === 0 || un.exp === 12) return true;
+        }
+        return false;
     }
+
+    /* ============ 无单位时默认按「元」补单位 ============
+       用户需求（2026-10-20）：点「乘以一万（改单位）」「除以一万（改单位）」时，
+       数字后面根本没有金额单位的，默认它是「元」，算完把单位补上——
+         ÷10000：元→万元，补「万元」（12345678.90 → 1,234.57万元，金额不变）
+         ×10000：元已在链条最底档、不平移，补「元」（123.45 → 1,234,500.00元）
+       为什么补之前要过一道 canAppendUnit：
+         补错单位 = 把金额改了一万倍，比不补更糟。所以只在数字后面
+         「什么单位词都没有」时才补——后面紧跟着汉字（美元/吨/个/元旦…）
+         一律不补：那要么是外币（外币绝不碰）、要么是量词（不是金额）。
+       闭括号/引号后面也不补：括号外面可能才是真正的单位（"(1234)元"）。 */
+    var UNIT_APPEND_RE_CJK = new RegExp('[\\u3400-\\u9fff]');   // 汉字（用 RegExp 构造，避免被未定义标识符扫描器当成噪声）
+
+    function canAppendUnit(t, s, e) {
+        var i = e, n = t.length;
+        while (i < n) {
+            var ch = t.charAt(i);
+            if (ch === ' ' || ch === '\t' || ch === '\u00a0' || ch === '\u3000') { i++; continue; }
+            break;
+        }
+        // 数字前面紧贴「元」字家族（"元100"这种倒装写法）：已有单位语义，不补
+        var q = s;
+        while (q > 0 && (t.charAt(q - 1) === ' ' || t.charAt(q - 1) === '\t')) q--;
+        var before = t.slice(Math.max(0, q - 3), q);
+        if (/(?:万亿元|亿元|万元|元)$/.test(before)) return false;
+        if (i >= n) return true;                                   // 数字后就是结尾
+        var c0 = t.charAt(i);
+        if (c0 === '\r' || c0 === '\n' || c0 === '\x07' || c0 === '\u000b' || c0 === '\u000c') return true;  // 段落/单元格结束
+        if (UNIT_APPEND_RE_CJK.test(c0)) return false;             // 汉字：外币、量词、不成词的字，一律不补
+        if (/[0-9A-Za-z.,\/%‰：:]/.test(c0)) return false;          // 数字/字母/小数点/逗号/斜杠/百分号：不补
+        if (/[）)\]】》>”’}]/.test(c0)) return false;                // 闭括号/闭引号：括号外可能才是单位
+        return true;                                               // 开标点、运算符、空白到尾：可补
+    }
+
     function convertToken(t, idx, raw, mode, o) {
         var sign = '', body = raw;
         if (body.length && '–—−-'.indexOf(body.charAt(0)) >= 0) {
@@ -303,17 +466,70 @@ var DshEngine = (function () {
             if (masked) continue;
             var conv = convertToken(t, s, m[0], mode, o);
             if (conv !== null && conv !== m[0]) {
-                res.push({ start: s, length: len, old: m[0], neu: conv });
                 /* 金额单位联动：数字改了就顺带把紧跟其后的单位平移一档。
-                   只在【数字确实改动过】时做 —— 数字没动而改单位，等于把金额改了。 */
-                if (o.unitConvert !== false) {
-                    var u = unitAfter(t, s + len, mask);
-                    if (u) {
-                        var nu = unitShift(u.text, mode);
-                        if (nu && nu !== u.text) {
-                            res.push({ start: u.start, length: u.length, old: u.text, neu: nu, unit: true });
+                   只在【数字确实改动过】时做 —— 数字没动而改单位，等于把金额改了。
+
+                   ⚠️ 链到头时必须【连数字一起不动】（用户报障 2026-10-20）：
+                   ×10000 遇到「元」、÷10000 遇到「万亿元」，已经没有下一档可换。
+                   此时若照常把数字乘/除一万，单位又不变，金额就凭空变了一万倍
+                   （实测 100元 → 1,000,000.00元）。
+                   「（改单位）」按键的立身之本就是【金额不变】，宁可不动也不能改错。
+                   要换口径就先手动把单位提到能承接的那一档（100元 → 100万元），再点它。 */
+                var unitChange = null;
+                /* 「（改单位）」模式下，数字与单位必须【同进同出】：
+                   只要拿不到一个能承接这次换算的单位，这处数字就整体保持原样。
+                   两种拿不到的情况：
+                     ① 已有单位，但已在链条尽头（×10000 遇「元」、÷10000 遇「万亿元」）；
+                     ② 裸数字且是 ×10000 —— 补「元」只是贴标签、金额照样变一万倍。
+                   「（改单位）」的立身之本是【金额不变】，宁可不动也不能改错。 */
+                var chainBlocked = false;
+                if (o.unitConvert === true && (mode === 'mul' || mode === 'div')) {
+                    /* 统一解析：人民币与外币走同一条路（parseUnit）。
+                       单位 = 档位词（可组合）× 币种词，档位记成指数（万=4 亿=8 万亿=12）。
+                       人民币「元」与外币「美元」在这里是同一种东西，只是币种词不同 ——
+                       所以「万万元」与「万美元」会被同等对待，不再一个认得一个认不得。 */
+                    var un = parseUnit(t, s + len, mask);
+                    if (un) {
+                        var nextExp = expShift(un.exp, mode);
+                        if (nextExp === null) {
+                            chainBlocked = true;                       // ① 链到头（含外币）
+                        } else {
+                            /* 只换【档位词】，币种词一个字都不动：
+                               万美元 → 亿美元 = "亿" + "美元"；万元 → 元 = "" + "元"。
+                               币种词在原串里的位置 = curStart，尾段即币种词本身。 */
+                            var cur = t.substr(un.curStart, un.curLen);
+                            var neu = expToScale(nextExp) + cur;
+                            unitChange = { start: un.start, length: un.length, old: un.text,
+                                           neu: neu, unit: true, fx: un.fx };
                         }
+                    } else if (mode === 'div' && canAppendUnit(t, s, s + len)) {
+                        /* 裸数字 ÷10000：默认它是元，补「万元」——元→万元真的往上一档，
+                           金额不变，是 1.10.0 起就有的行为，保留。 */
+                        unitChange = {
+                            start: s + len, length: 0, old: '', neu: '万元',
+                            unit: true, appended: true
+                        };
+                    } else if (mode === 'mul' && canAppendUnit(t, s, s + len)) {
+                        /* 裸数字 ×10000：见上方说明，补「元」只是贴标签 → 整体不动。 */
+                        chainBlocked = true;                           // ② 裸数字 ×10000
+                    } else if (hasScaleWord(t, s + len)) {
+                        /* ③ 数字后面有档位词（万/亿/万亿）却凑不出一个像样的单位
+                           —— 例如「100亿万」「100万亿亿」这类两档连写。
+                           它不是"裸数字"（不是没单位），也不是"能换档的单位"（换不了）。
+                           两种都靠不住，唯一安全的做法是【整体不动】：
+                           否则数字改了一万、那几个字又没跟着改，金额就凭空变一万倍。
+                           —— 这条把「（改单位）= 金额不变」变成了硬约束：
+                           凡是凑不出可换档单位的数字，一律不碰。 */
+                        chainBlocked = true;
                     }
+                    /* ⚠️ 以上分支都要求 parseUnit 认不出单位，也就是
+                       "数字后面真的什么都没有"（canAppendUnit 为 true）。
+                       canAppendUnit 为 false 时不拦：那说明后面跟着量词（100吨）——
+                       量词不是金额单位，数字照常乘除是老规矩（v1.9.7 起）。 */
+                }
+                if (!chainBlocked) {
+                    res.push({ start: s, length: len, old: m[0], neu: conv });
+                    if (unitChange) res.push(unitChange);
                 }
             }
         }
@@ -329,6 +545,172 @@ var DshEngine = (function () {
             pos = c.start + c.length;
         }
         return sb + t.slice(pos);
+    }
+
+    /* ============ 选择范围模糊识别（2026-10-20 用户需求） ============
+       场景：用户常常只选中长数字的一部分（或光标只是点在数字中间/紧贴两侧），
+       期望的是"对完整数字做计算"。旧行为会把选中的片段当成独立数字——
+       选 12345678 里的 3456，算完就把完整数字撕成了碎片。
+       规则（纯文本逻辑，Node 下可单测）：
+         · 有选区：与数字 token 有【任何重叠】的都按完整 token 处理；
+           连续多个 token 取首尾包络；完全不重叠 → null。
+         · 光标（start === end）：落在 token 内部、或紧贴 token 左/右边界 →
+           圈住该 token（多个同时满足时取最左边那个）；否则 → null。
+       wantUnit：数字后紧跟金额单位时把单位也圈进来——（改单位）模式下
+       数字和单位必须同进同出，只换数字不换单位等于把金额改了一万倍。 */
+    /* 所有可能的金额单位词（用于"光标点在单位上"的识别）。
+       含人民币各档（万元/亿元/万亿元）与外币（美元/欧元/…/新加坡元/新台币/人民币）。 */
+    var UNIT_WORDS_ALL = ['万亿元', '亿元', '万元', '美元', '欧元', '港元', '日元', '澳元', '加元', '韩元',
+                          '新加坡元', '新加坡币', '新台币', '人民币', '台币', '美金', '英镑', '卢布', '卢比',
+                          '法郎', '马克', '瑞郎', '坡币', '元'];
+    /* 档位词 + 币种词的组合（亿美元、万人民币、万新台币…）。
+       不列全的话，"光标点在'亿'字上"就认不出单位（'亿'本身只是档位词，不是币种）。
+       这里按"档位词在前 + 币种词在后"拼接，长度优先。 */
+    var SCALE_PREFIX_ALL = ['万亿', '亿', '万'];
+    function buildCompoundUnits() {
+        var out = [];
+        for (var i = 0; i < SCALE_PREFIX_ALL.length; i++) {
+            for (var j = 0; j < UNIT_WORDS_ALL.length; j++) {
+                if (UNIT_WORDS_ALL[j] === '元') continue;      // 「亿元」这类已在上面
+                out.push(SCALE_PREFIX_ALL[i] + UNIT_WORDS_ALL[j]);
+            }
+        }
+        return out;
+    }
+    var UNIT_WORDS_COMPOUND = buildCompoundUnits();
+
+    /* 找出与 [start,end) 重叠的单位词（长词优先）。
+       用途：用户把光标点在"万元"的"万"字上时，意图显然是改那个数字，
+       不该因为"光标不在数字上"就退回整篇。 */
+    function unitNear(text, start, end) {
+        var from = Math.max(0, start - 6), to = Math.min(text.length, end + 6);
+        if (to <= from) return null;
+        var seg = text.slice(from, to);
+        var best = null;
+        var ALL = UNIT_WORDS_ALL.concat(UNIT_WORDS_COMPOUND);
+        for (var i = 0; i < ALL.length; i++) {
+            var w = ALL[i];
+            var idx = seg.indexOf(w);
+            while (idx >= 0) {
+                var s = from + idx, e = s + w.length;
+                /* ⚠️ 判定必须是"【盖住】光标位置"，不能是"与选区重叠"：
+                   光标是【零宽】的（start === end），用重叠判定
+                   （s < end && start < e）在单位正好从光标处开始时永远不成立
+                   —— 那正是用户点的位置（"万"字）。这次踩过。
+                   正确写法：单位区间与光标【有交集】，
+                   即 s <= end && start <= e（闭区间，端点也算命中）。 */
+                if (s <= end && start <= e) {
+                    if (!best || w.length > best.len) best = { word: w, len: w.length, start: s, end: e };
+                }
+                idx = seg.indexOf(w, idx + 1);
+            }
+        }
+        return best;
+    }
+
+    /* 找出"紧挨在 limit 之前"的数字 token（中间只允许空白）。
+       返回 {s, e} 或 null。 */
+    function numberEndingAt(text, limit) {
+        var q = limit;
+        while (q > 0 && /\s/.test(text.charAt(q - 1))) q--;
+        var rx = /[-–—−]?\d[\d,]*(?:\.\d+)?/g, m, best = null;
+        while ((m = rx.exec(text)) !== null) {
+            if (m.index + m[0].length > q) break;
+            best = { s: m.index, e: m.index + m[0].length };
+        }
+        if (best && best.e === q) return best;
+        return null;
+    }
+
+    function expandSpan(text, start, end, wantUnit) {
+        if (!text) return null;
+        var n = text.length;
+        if (!(start >= 0) || !(end >= start) || end > n) return null;
+        var rx = /[-–—−]?\d[\d,]*(?:\.\d+)?/g;
+        var m, first = -1, last = -1;
+        while ((m = rx.exec(text)) !== null) {
+            var s = m.index, e = s + m[0].length;
+            if (start < end) {
+                if (start < e && s < end) {                    // 选区与 token 重叠
+                    if (first < 0) first = s;
+                    if (e > last) last = e;
+                } else if (first >= 0 && s >= end) {
+                    break;                                     // 已越过选区
+                }
+            } else {
+                if ((start > s && start < e) || start === s || start === e) {
+                    first = s; last = e;                       // 光标在 token 内或紧贴两侧
+                    break;
+                }
+                if (s > start) break;                          // token 全在光标之后，不贴
+            }
+        }
+        if (first < 0) {
+            /* 没圈到数字：光标可能点在【单位】上（"万元"的"万"字），或单位与数字之间。
+               那时用户的意图很清楚 —— 改这个单位所属的那个数字。
+               不处理的话，模糊识别会退回"整篇"，把用户没碰过的地方也一起改了
+               （2026-10-20 用户报障：表格里没碰的格子被一起除了）。 */
+            if (start === end) {
+                var ue = unitNear(text, start, end);
+                if (ue) {
+                    var nb = numberEndingAt(text, ue.start);
+                    if (nb) {
+                        first = nb.s;
+                        last = ue.end;                 // 单位一并圈上，数字与单位同进同出
+                        if (wantUnit) { /* 已含单位，无需再扩 */ }
+                        else { last = nb.e; }          // 不带（改单位）时只圈数字
+                        return { s: first, e: last };
+                    }
+                }
+            }
+            return null;
+        }
+        if (wantUnit) {
+            var u = parseUnit(text, last, null);               // mask 传 null：只探"有没有单位"，不查保护区
+            if (u) last = Math.max(last, u.start + u.length);
+        }
+        return { s: first, e: last };
+    }
+
+    /* 只保留完全落在 [s, e] 内的变更。用于模糊识别：上下文窗口里"别的数字"
+       算出来的 change 一律不写回，只写圈定范围内的（单位换算、补单位插入都算在内）。 */
+    function filterChanges(changes, s, e) {
+        var out = [];
+        for (var i = 0; i < changes.length; i++) {
+            var c = changes[i];
+            if (c.start >= s && c.start + c.length <= e) out.push(c);
+        }
+        return out;
+    }
+
+    /* ============ 位置 ↔ 文本下标换算（表格里唯一的坑） ============
+       Word 的位置空间里，一个单元格的结束标记 "\r\x07" 占 2 个位置；
+       WPS 里只占 1 个 —— 也就是说 \x07 在 WPS 的位置空间里【零宽】。
+       实测（2026-10-20，用 COM 读同一篇文档，证据可复跑）：
+         Content.End − Content.Start = 12491，Content.Text.length = 13013，
+         两者相差 522，正好等于全文 \x07 的个数（522 个）；
+         Range(387,388).Text = "\r\x07"（2 个字符，占 1 个位置）。
+       后果：只要把"位置相减"当成"文本下标"，一跨过表格单元格就会整体左偏，
+       模糊识别于是圈到【别的数字】（实测圈到了上一行的身份证号），
+       那个数字又被保护区拦住 → 可处理处数 0 → 静默没反应。
+       这就是"表格里的数字点千分符/乘除没反应"的根因。
+       规矩：下标 ↔ 位置一律走下面两个函数，不许再直接相减。 */
+    function posFromIdx(t, idx) {                 // 文本下标 → 位置增量
+        var e = Math.min(idx, t.length), n = 0, i;
+        for (i = 0; i < e; i++) { if (t.charAt(i) === '\x07') { n++; } }
+        return e - n;
+    }
+    function idxFromPos(t, off) {                 // 位置增量 → 文本下标
+        var i = 0, p = 0, n = t.length;
+        while (i < n && p < off) {
+            if (t.charAt(i) === '\x07') { i++; continue; }   // \x07 零宽：只吃字符、不吃位置
+            i++; p++;
+        }
+        /* 边界落在"格尾标记对"里时，把零宽的 \x07 一并跳过 ——
+           位置边界应当贴着它【后面】那个字符，否则光标会被判定成"停在标记上"，
+           模糊识别就会说"不挨任何数字"（实测症状：表格里点了没反应）。 */
+        while (i < n && t.charAt(i) === '\x07') { i++; }
+        return i;
     }
 
     /* ---------------- 序号填充（纯逻辑，可单测） ---------------- */
@@ -367,6 +749,16 @@ var DshEngine = (function () {
             n = Math.floor((n - 1) / 26);
         }
         return s;
+    }
+
+    /* alphaFromNumber 的反函数：A→1、Z→26、AA→27。
+       必须和 alphaFromNumber 用同一套进位（A=1 的 26 进制），否则
+       「A B C」格式在正文里改成「AA」再点一次会算成别的数。 */
+    function lettersToNumber(s) {
+        if (!/^[A-Za-z]{1,2}$/.test(String(s || ''))) return null;
+        var t = String(s).toUpperCase(), v = 0;
+        for (var i = 0; i < t.length; i++) v = v * 26 + (t.charCodeAt(i) - 64);
+        return v > 0 ? v : null;
     }
 
     /* 带圈 / 带括号 / 带点数字：①..⑳ ⑴..⒇ ⒈..⒛ */
@@ -438,6 +830,191 @@ var DshEngine = (function () {
         return out;
     }
 
+    /* ================= 正文段落序号（v1.11.0） =================
+
+       表格里的格子只有序号本身，正文段落却是「序号 + 一大段话」混在一行里。
+       所以正文版不能复用 seqParse（它要求整串就是序号），必须单独抽出
+       【段首那一截】来认。这是正文与表格唯一的实质差异。 */
+
+    /* 段首能认的旧序号只有四种形态，每一种都必须有【显式边界】。
+       为什么死守"显式边界"：正文里最常见的误判是「2024年12月31日」
+       被当成序号 2024、「一是……」被当成序号「一」。锚点就是那个分隔符
+       —— 没有分隔符就不是序号，只是恰好以数字/汉字开头的正文。
+
+       ① 包裹型：（1）(1)【1】[1]（一）(一)(A)
+       ② 裸 + 分隔符：1、 1. 1， 1： （空格【不算】分隔符，见下）
+       ③ 带圈字符：① ⑴ ⒈ —— 单字符自成序号，无需分隔符
+       ④ 不认「第X条」「第X项」：那是条款名，改写成「12、」会丢掉"条"字 */
+
+    var RE_SEQ_WRAP = /^[（(【\[]\s*([0-9０-９]{1,3}|[零一两二三四五六七八九十]{1,3}|[A-Za-z]{1,2})\s*[）)】\]]/;
+    /* 分隔符只认这七种。**半角空格不在内**：`1 月`、`1 条` 这类是量词短语，
+       认了就会把「1 月 5 日」改成「1、月 5 日」。宁可漏判（叠加一个序号，看得见）
+       也不能误判（改坏正文，看不出来）。 */
+    var RE_SEQ_BARE = /^([0-9０-９]{1,3}|[零一两二三四五六七八九十]{1,3}|[A-Za-z]{1,2})\s*([、.．,，:：])/;
+
+    /* 把一个序号 token 解析成数字：全角数字、中文数字、字母三种 */
+    function seqTokenValue(tok) {
+        var t = String(tok == null ? '' : tok);
+        t = t.replace(/[０-９]/g, function (ch) {
+            return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0);
+        });
+        if (/^\d{1,3}$/.test(t)) return parseInt(t, 10);
+        if (/^[A-Za-z]{1,2}$/.test(t)) return lettersToNumber(t);
+        return cnToNumber(t);
+    }
+
+    /* 段首拆解：缩进 + 旧序号。
+       返回 start = 旧序号在整段里的起始下标（= 缩进长度），
+            end   = 旧序号结束处的下标（认不出时 end === start，即"在此处插入"），
+            value = 旧序号数值，认不出为 null
+       缩进保留不动：中文公文首行缩进常用两个全角空格，把序号插到缩进前面
+       会顶格，看着像排版坏了。
+
+       【v1.11.2 叠号收敛】认出一个序号后，若它【后面紧跟着另一个可识别序号】，
+       把那一串一起吞掉（只保留最外层那一个的数值）。
+       为什么必须这样：2026-10-21 实测「换格式点两次」会叠成 `一、①10,000,000.00 元`——
+       因为 ① 后面接数字时不被当成序号（见下 ②），于是本次只认到 `一、`，
+       在它【前面】又插一个 → 越点越乱。叠号一旦产生就会自我强化，
+       所以必须让识别端能吃掉"序号+序号"这种畸形前缀，一点点自己收敛回来。 */
+    /* 吞叠号：吞掉【不同形态】的连写（`一、①`），以及【带圈同值自叠】（`①①`）。
+       正文里的并列项不能被吞，判据分三层：
+         · 裸格式（`1、` `一、`）自带顿号/点/逗号 → 连写是并列项，停手
+         · 包裹型（`（一）（二）`）括号自身就是分隔 → 连写是并列项，停手
+         · 带圈（`①①`）：没有分隔符，但要看【数值】——
+             同值（`①①`）= 同一个号叠了两遍 = 叠号，吞
+             异值（`①②`）= 并列两项 = 正文，停手
+           （2026-10-21 质检发现：初版只按"有没有分隔符"判，把 `①②两种情形`
+             吞成了 `1、两种情形`，删掉了 `②` —— 修叠号引入删内容，比原缺陷严重。
+             数值相同才是叠号，这是圆号码唯一的可靠判据。）
+
+       因此同 kind 时只有 circ 且【同值】继续吞；
+       不同 kind（`一、①` 这种畸形混写）一律吞。 */
+    function seqSwallowStacked(body, startIdx, endIdx, firstKind, firstValue) {
+        var e = endIdx, guard = 0, kind = firstKind, val = firstValue;
+        while (guard++ < 4) {
+            var tail = body.slice(e);
+            if (!tail) break;
+            var L = seqParaLeadBare(tail);
+            if (!L || L.value === null) break;
+            if (L.kind === kind) {
+                // 同形态：只有带圈且数值相同才是叠号
+                if (L.kind !== 'circ') break;
+                if (L.value !== val) break;
+            }
+            e = e + L.end;
+            kind = L.kind;
+            val = L.value;
+        }
+        return e;
+    }
+
+    /* 单层识别（不含"吞叠号"逻辑，供 seqSwallowStacked 递归用）。
+       额外返回 kind = 'wrap' | 'circ' | 'bare'，
+       让"吞叠号"能区分「不同形态连写（畸形，要吞）」和「同形态连写（正文，不能吞）」。 */
+    function seqParaLeadBare(rest) {
+        var m, v;
+        // ① 包裹型
+        m = RE_SEQ_WRAP.exec(rest);
+        if (m) {
+            v = seqTokenValue(m[1]);
+            if (v !== null) return { start: 0, end: m[0].length, value: v, indent: 0, kind: 'wrap' };
+        }
+        /* ② 带圈字符（⑪ 这类超出 ⑳ 的不认）
+           【v1.11.2】只挡字母，不挡数字。
+           旧写法连数字一起挡，理由是"避免 ①a 误伤"；但带圈序号后面接数字是常态
+           （`①10,000,000.00 元`、`①2024年`，带圈号本来就是自成一体的一格），
+           挡住的结果是 ① 被当成正文、插件在它【前面】再插一个序号 →
+           `一、①10,000,000.00 元`，换一次格式叠一层，越点越乱。
+           字母仍要挡：`①a` 多半是型号/编号的一部分，不宜当序号改写。 */
+        var cv = circledToNumber(rest.charAt(0));
+        if (cv !== null && !/[A-Za-z]/.test(rest.charAt(1))) {
+            return { start: 0, end: 1, value: cv, indent: 0, kind: 'circ' };
+        }
+        // ③ 裸 + 分隔符
+        m = RE_SEQ_BARE.exec(rest);
+        if (m) {
+            v = seqTokenValue(m[1]);
+            if (v !== null) {
+                /* 【v1.11.1】分隔符后面紧跟数字 = 那是数字本身的一部分，不是序号收尾：
+                   `10,000,000.00`（千分位逗号）、`3.5`（小数点）、`1:30`（时间冒号）。
+                   没有这条，以金额/小数开头的段落会被当成「已有序号 10、」重写，
+                   正文被改成 `10、000,000.00 元` —— 金额当场改坏，且看不出来。
+                   顿号除外：`1、2024年工作要点` 是正经的序号后接数字开头正文。
+                   宁可漏判（多叠一个序号，看得见、能改），不可误判。 */
+                var sep = m[2];
+                var nc = rest.charCodeAt(m[0].length);
+                var digitNext = (nc >= 48 && nc <= 57) || (nc >= 0xFF10 && nc <= 0xFF19);
+                if (!(digitNext && sep !== '、')) {
+                    return { start: 0, end: m[0].length, value: v, indent: 0, kind: 'bare' };
+                }
+            }
+        }
+        return null;
+    }
+
+    function seqParaLead(raw) {
+        var t = String(raw == null ? '' : raw);
+        var i = 0;
+        while (i < t.length) {
+            var c = t.charAt(i);
+            if (c === ' ' || c === '\u3000' || c === '\t' || c === '\u00A0') { i++; continue; }
+            break;
+        }
+        var miss = { start: i, end: i, value: null, indent: i };
+        if (i >= t.length) return miss;
+        var rest = t.slice(i);
+
+        var L = seqParaLeadBare(rest);
+        if (!L) return miss;
+        // 叠号收敛：`一、①` 这类【不同形态】连写一起吃掉，数值取最外层（最靠前）那个。
+        // ⚠️ L.end 是【相对 rest】的下标，这里必须换算成整段内的绝对下标再传
+        var end = seqSwallowStacked(t, i, i + L.end, L.kind, L.value);
+        return { start: i, end: end, value: L.value, indent: i };
+    }
+
+    /* 正文里用的序号前缀：格式表里「裸」的几种要补顿号
+       （`1` → `1、`，`一` → `一、`，`A` → `A、`），
+       已经自带收尾标记的原样用（`1、`、`（1）`、`（一）`、`①`）。
+       不补的话正文会变成「1这是正文」，序号和第一个字黏在一起。 */
+    function seqPrefixFor(index, n) {
+        var s = seqFormat(index, n);
+        if (/[、.．,，:：)）】\]》」』”’]$/.test(s)) return s;   // 自带收尾
+        if (s.length === 1 && circledToNumber(s) !== null) return s;   // ①
+        return s + '、';
+    }
+
+    /* 正文段落编号计划。
+       与表格版的语义保持一致，只是"空格"的定义不同：
+         · 段首已有序号     → 保留原数值、只按新格式重写（= 换格式刷新）
+         · 段首没有序号     → 接着上一个号往下填
+         · 纯空白段落       → 跳过，既不编号也不占号（正文里的空行不该吃掉一个号）
+         · renumberAll=true → 连同已有数值一起从 seqStart 重排
+       返回 start/length 是【要替换的那一截】相对段文本的下标与长度，
+       length=0 表示插入。整段文字不重写 —— 只碰段首那几个字符，
+       正文的格式（加粗、字体、修订痕迹）才不会丢。 */
+    function seqPlanParagraphs(texts, startValue, renumberAll, fmtIndex) {
+        var last = (startValue || 1) - 1;
+        var out = [];
+        for (var i = 0; i < texts.length; i++) {
+            var body = String(texts[i] == null ? '' : texts[i]).replace(/[\r\n\u0007\u0001\u0002]/g, '');
+            if (body.replace(/[\s\u3000]/g, '') === '') continue;   // 空段：不占号
+            var lead = seqParaLead(body);
+            var v = (lead.value !== null && !renumberAll) ? lead.value : (last + 1);
+            last = v;
+            var prefix = seqPrefixFor(fmtIndex, v);
+            out.push({
+                index: i,
+                value: v,
+                start: lead.start,                      // 替换起点（缩进之后）
+                length: lead.end - lead.start,          // 旧序号长度，0 = 插入
+                oldPrefix: body.slice(lead.start, lead.end),
+                prefix: prefix,
+                neu: body.slice(0, lead.start) + prefix + body.slice(lead.end)
+            });
+        }
+        return out;
+    }
+
     /* 区域求和：与千分符共用同一套保护区，日期/文号/章节号/百分比/长数字串不参与 */
     function sumNumbers(t, o) {
         var res = { sum: 0, count: 0 };
@@ -485,8 +1062,16 @@ var DshEngine = (function () {
         seqPlan: seqPlan, seqFormat: seqFormat, seqParse: seqParse,
         seqFormatCount: SEQ_FORMATS.length,
         seqFormatLabel: function (i) { return (SEQ_FORMATS[i] || SEQ_FORMATS[0]).label; },
+        seqParaLead: seqParaLead, seqPlanParagraphs: seqPlanParagraphs,
+        seqPrefixFor: seqPrefixFor, lettersToNumber: lettersToNumber,
         sumNumbers: sumNumbers, formatNumber: formatNumber,
-        cmpVersion: cmpVersion
+        cmpVersion: cmpVersion,
+        expandSpan: expandSpan, filterChanges: filterChanges,
+        posFromIdx: posFromIdx, idxFromPos: idxFromPos,
+        hasUnitAtChainEnd: hasUnitAtChainEnd,
+        unitNear: unitNear, numberEndingAt: numberEndingAt,
+        parseUnit: parseUnit, readScale: readScale, expShift: expShift, expToScale: expToScale,
+        hasScaleWord: hasScaleWord
     };
 })();
 
@@ -582,6 +1167,78 @@ function DSH_effOpts() {
     for (k in DSH_RUN_OPT) { if (Object.prototype.hasOwnProperty.call(DSH_RUN_OPT, k)) o[k] = DSH_RUN_OPT[k]; }
     return o;
 }
+/* 取【光标所在段落】的 Range。
+   为什么需要它：模糊识别没命中时的退路不能再是"整篇"（见 DSH_run 里的说明）。
+
+   三层取法，从省到稳：
+     ① Selection.Paragraphs.Item(1).Range      —— 最直接
+     ② Selection.Range.Paragraphs.Item(1).Range —— 换个入口再试
+     ③ 纯文本扫描：取全文文本，在【文本下标】里找光标前后的段落标记
+        （⚠️ 位置与下标在表格里不等 ——  零宽，所以必须用 idxFromPos/posFromIdx 换算，
+          不能用 pos - start 直接当偏移）
+   三层都拿不到就返回 null —— 由调用方决定怎么办（绝不能默认整篇）。 */
+async function DSH_paragraphRange(doc, sel, diag) {
+    // ① ②
+    try {
+        var paras = await DSH_P(sel, 'Paragraphs');
+        if (!paras) {
+            var selRange = await DSH_P(sel, 'Range');
+            if (selRange) paras = await DSH_P(selRange, 'Paragraphs');
+        }
+        if (paras) {
+            var n = Number((await DSH_P(paras, 'Count')) || 0);
+            if (n >= 1) {
+                var p1 = await DSH_R(paras.Item(1));
+                if (p1) {
+                    var pr = await DSH_P(p1, 'Range');
+                    if (pr) return pr;
+                }
+            }
+        }
+    } catch (e) {
+        diag.push('取段落(API)失败: ' + (e && e.message ? e.message : e));
+    }
+    // ③ 纯文本扫描
+    try {
+        var cur = Number(await DSH_P(sel, 'Start'));
+        var contentRange = await DSH_P(doc, 'Content');
+        if (contentRange && isFinite(cur)) {
+            var full = String((await DSH_P(contentRange, 'Text')) || '');
+            var basePos = Number((await DSH_P(contentRange, 'Start')) || 0);
+            if (full.length) {
+                /* 光标在全文里的【文本下标】 */
+                var ti = DshEngine.idxFromPos(full, cur - basePos);
+                if (ti < 0) ti = 0;
+                if (ti > full.length) ti = full.length;
+                /* 向前找最近的段落标记（
+ /  都算单元格/段落结束） */
+                var s = ti;
+                while (s > 0) {
+                    var c0 = full.charAt(s - 1);
+                    if (c0 === '\r' || c0 === '\x07') break;
+                    s--;
+                }
+                /* 向后找最近的段落结束 */
+                var e2 = ti;
+                while (e2 < full.length) {
+                    var c1 = full.charAt(e2);
+                    if (c1 === '\r' || c1 === '\x07') { e2++; break; }
+                    e2++;
+                }
+                var startPos = basePos + DshEngine.posFromIdx(full, s);
+                var endPos = basePos + DshEngine.posFromIdx(full, e2);
+                if (endPos > startPos) {
+                    var r = await DSH_R(doc.Range(startPos, endPos));
+                    if (r) return r;
+                }
+            }
+        }
+    } catch (e) {
+        diag.push('取段落(文本扫描)失败: ' + (e && e.message ? e.message : e));
+    }
+    return null;
+}
+
 async function DSH_run(mode, diagnoseOnly, unitConvert) {
     var prevOpt = DSH_RUN_OPT;
     DSH_RUN_OPT = (typeof unitConvert === 'boolean') ? { unitConvert: unitConvert } : null;
@@ -614,26 +1271,107 @@ async function DSH_run(mode, diagnoseOnly, unitConvert) {
         // 逐格处理完全不跨格做位置运算，从根上避开这个问题。
         var cells = await DSH_P(sel, 'Cells');
         var cellCount = cells ? Number((await DSH_P(cells, 'Count')) || 0) : 0;
+        diag.push('表格单元格=' + cellCount);
         if (cellCount > 1) {
             diag.push('目标=表格 ' + cellCount + ' 个单元格（逐格处理）');
             return await DSH_runTable(app, doc, sel, cells, cellCount, mode, diagnoseOnly, diag);
         }
 
-        var target, basePos = 0;
-        if (hasSel) {
-            target = await DSH_P(sel, 'Range');
-            diag.push('目标=选区');
-        } else {
-            target = await DSH_P(doc, 'Content');
-            diag.push('目标=整篇正文');
+        /* —— 模糊识别（2026-10-20 用户需求）——
+           光标点在数字中间/紧贴两侧，或选区只盖住数字的一部分时，
+           只处理"完整数字"本身：不把片段当独立数字算，也不动整篇。
+           三个数字功能都走这条路（千分符 / 乘 / 除），心智模型一致：
+           「光标或选区挨着哪个数字，就只动哪个数字」。
+           拿不到位置、或光标/选区不挨任何数字 → 走老逻辑（选区/整篇），与旧版完全一致。 */
+        var target = null, basePos = 0, text = '', changes = null, fuzzy = false;
+        try {
+            var posS = Number(await DSH_P(sel, 'Start'));
+            var posE = Number(await DSH_P(sel, 'End'));
+            if (isFinite(posS) && isFinite(posE) && posS >= 0 && posE >= posS) {
+                /* 先拿正文末尾位置当上界：Range(a, 超过末尾) 在 WPS 里可能直接抛错，
+                   抛出来就会被下面的 catch 吞掉、静默退回老逻辑（=处理整篇）。 */
+                var docEndPos = Number((await DSH_P(await DSH_P(doc, 'Content'), 'End')) || 0);
+                if (!isFinite(docEndPos) || docEndPos <= 0) { docEndPos = 0; }
+                var probeA = Math.max(0, posS - 120);
+                var probeB = (docEndPos && posE + 120 > docEndPos) ? docEndPos : posE + 120;
+                var probeRange = await DSH_R(doc.Range(probeA, probeB));
+                var probeText = String((await DSH_P(probeRange, 'Text')) || '');
+                /* ⚠️ 不能写成 posS - probeA：索引是"文本下标"，posS/probeA 是"位置"，
+                   表格里每个 \x07 都让两者差 1（见 posFromIdx 的实测说明）。 */
+                var relS = DshEngine.idxFromPos(probeText, posS - probeA);
+                var relE = DshEngine.idxFromPos(probeText, posE - probeA);
+                var wantUnit = DSH_effOpts().unitConvert === true && (mode === 'mul' || mode === 'div');
+                var span = DshEngine.expandSpan(probeText, relS, relE, wantUnit);
+                diag.push('光标位置=' + posS + '..' + posE + ' 探针=' + probeA + '..' + probeB +
+                          ' 探针长度=' + probeText.length + ' 表内下标=' + relS + '..' + relE);
+                if (span) {
+                    /* 上下文窗口再各扩 40 字符：日期/文号/证件这些保护区要靠上下文才认得出。
+                       例如光标点在「2024年12月31日」的年份上，圈出的虽然只是 2024，
+                       但窗口里有完整日期，保护区照样拦得住。 */
+                    var spanPosA = probeA + DshEngine.posFromIdx(probeText, span.s);
+                    var spanPosB = probeA + DshEngine.posFromIdx(probeText, span.e);
+                    var ctxA = Math.max(0, spanPosA - 40);
+                    var ctxB = (docEndPos && spanPosB + 40 > docEndPos) ? docEndPos : spanPosB + 40;
+                    var ctxRange = await DSH_R(doc.Range(ctxA, ctxB));
+                    var ctxText = String((await DSH_P(ctxRange, 'Text')) || '');
+                    /* 圈定范围也要用下标表示：ctxText 里同样有 \x07（整篇/跨格窗口一定有）。 */
+                    var sIdx = DshEngine.idxFromPos(ctxText, spanPosA - ctxA);
+                    var eIdx = DshEngine.idxFromPos(ctxText, spanPosB - ctxA);
+                    changes = DshEngine.filterChanges(
+                        DshEngine.compute(ctxText, mode, DSH_effOpts()), sIdx, eIdx);
+                    basePos = ctxA;
+                    text = ctxText;
+                    fuzzy = true;
+                    diag.push('目标=模糊识别（' + JSON.stringify(probeText.slice(span.s, span.e)) + '）');
+                    diag.push('模糊范围内可处理=' + changes.length);
+                } else {
+                    diag.push('模糊识别=不适用（光标/选区不挨数字）');
+                }
+            }
+        } catch (e) {
+            diag.push('模糊识别异常（退回老逻辑）: ' + (e && e.message ? e.message : e));
+            fuzzy = false;
         }
-        if (!target) { DSH_say('拿不到目标区域。\n\n' + diag.join('\n')); return; }
 
-        var text = String((await DSH_P(target, 'Text')) || '');
-        basePos = Number((await DSH_P(target, 'Start')) || 0);
-        diag.push('文本长度=' + text.length);
+        /* 模糊识别没命中时的退路（2026-10-20 用户报障修）：
+           旧退路是【整篇正文】—— 光标点在"单位"上、或点在数字与单位之间的空格上时，
+           模糊识别认不出数字（expandSpan 只认数字 token），于是退回整篇，
+           结果【表格里用户根本没碰过的格子也一起被除了】。
+           实测：光标停在"1,000.00 万元"的"万"字上，点除以一万（改单位），
+                 表格里的 100 和 1000000元 都被除了，而用户只想改那一段。
 
-        var changes = DshEngine.compute(text, mode, DSH_effOpts());
+           改法：退路【不再整篇】，改成【光标所在的那一段】。
+           · 有选区 → 照旧处理选区
+           · 无选区 → 只处理光标所在段落
+           "光标在段落里"这件事本身就说明了用户的意图范围；
+           整篇是比用户意图【大得多】的范围，误伤成本不对称 ——
+           少改一处用户会自己补，多改一处可能改坏审计报告。
+           真的想处理整篇：把光标放到一个【空段落】里（那里没有数字、也没有段落可改），
+           或者直接选中整篇再点。 */
+        if (!fuzzy) {
+            if (hasSel) {
+                target = await DSH_P(sel, 'Range');
+                diag.push('目标=选区');
+            } else {
+                target = await DSH_paragraphRange(doc, sel, diag);
+                diag.push('目标=光标所在段落');
+            }
+            if (!target) {
+                /* 连段落都拿不到 → 【不动】，并说清楚怎么办。
+                   ⚠️ 绝不能在这里退回整篇：那正是本次修掉的误伤来源
+                   （用户没碰过的表格格子被一起除了）。
+                   想处理整篇：Ctrl+A 全选后再点（有选区走选区那条路）。 */
+                DSH_say('便捷插件：没找到光标所在的段落，这一处没有改动。\n\n'
+                    + '请确认文档已打开、光标在正文里。\n'
+                    + '若要处理整篇，请先 Ctrl+A 全选再点（选中状态会按选区处理）。');
+                return;
+            }
+
+            text = String((await DSH_P(target, 'Text')) || '');
+            basePos = Number((await DSH_P(target, 'Start')) || 0);
+            diag.push('文本长度=' + text.length);
+            changes = DshEngine.compute(text, mode, DSH_effOpts());
+        }
         diag.push('可处理处数=' + changes.length);
 
         if (diagnoseOnly) {
@@ -654,7 +1392,11 @@ async function DSH_run(mode, diagnoseOnly, unitConvert) {
         for (var i = changes.length - 1; i >= 0; i--) {
             var c = changes[i];
             try {
-                var r = await DSH_R(doc.Range(basePos + c.start, basePos + c.start + c.length));
+                /* 写回地址必须用 posFromIdx 换算：c.start 是【文本下标】，
+                   text 里每个 \x07 都不占位置（表格里差 1 个位置/格）。 */
+                var wA = basePos + DshEngine.posFromIdx(text, c.start);
+                var wB = basePos + DshEngine.posFromIdx(text, c.start + c.length);
+                var r = await DSH_R(doc.Range(wA, wB));
                 if (!r) { failed++; continue; }
                 var cur = String((await DSH_P(r, 'Text')) || '');
                 if (cur !== c.old) { failed++; continue; }
@@ -671,6 +1413,25 @@ async function DSH_run(mode, diagnoseOnly, unitConvert) {
 
         var label = mode === 'thousands' ? '已加千分符' : (mode === 'mul' ? '已乘以一万' : '已除以一万');
 
+        /* 「（改单位）」按键：整段区域里一个数都没改动，但原因很可能是
+           "单位已在链条尽头，整数与单位一起不动"——这是【有意的保护】，
+           不是没反应。必须说清楚，否则用户只会以为插件坏了。
+           判据：确实开了 unitConvert，且原文里存在"数字+链条尽头单位"的组合。 */
+        if (done === 0 && failed === 0 && DSH_RUN_OPT && DSH_RUN_OPT.unitConvert === true
+            && (mode === 'mul' || mode === 'div')) {
+            var atTop = DshEngine.hasUnitAtChainEnd(text);
+            if (atTop) {
+                DSH_say('便捷插件：这一段没有改动。\n\n'
+                    + '原因：单位已在这条换算链的' + (mode === 'mul' ? '最底档（元）' : '最高档（万亿元）')
+                    + '，再往上/往下就没有档位可换了。\n'
+                    + '如果照常改数字而单位不动，金额就会凭空变一万倍，\n'
+                    + '所以数字和单位一起保持原样。\n\n'
+                    + '想换写法：先把单位手动改到能承接的那一档，再点一次。\n'
+                    + '例：100元 → 改成 100万元 → 再点「乘以一万（改单位）」→ 1,000,000.00元');
+                return;
+            }
+        }
+
         if (done === 0) {
             // 找到了该处理的数字却一处也没写成功 = 真出问题了，必须弹窗
             DSH_say('便捷插件：一处也没改成功。\n\n' + diag.join('\n'));
@@ -681,7 +1442,10 @@ async function DSH_run(mode, diagnoseOnly, unitConvert) {
            会以为只是数字变了 —— 实际是金额口径变了。 */
         var unitNote = '';
         if (units) {
-            unitNote = '，另换算 ' + units + ' 处单位（' + (mode === 'mul' ? '万元→元' : '元→万元/万元→亿元') + '）';
+            var appended = 0;
+            for (var ui = 0; ui < changes.length; ui++) { if (changes[ui].appended) appended++; }
+            unitNote = '，另换算 ' + units + ' 处单位（' + (mode === 'mul' ? '万元→元' : '元→万元/万元→亿元') + '）' +
+                       (appended ? '，其中 ' + appended + ' 处默认按「元」补了单位' : '');
         }
         DSH_quiet(label + '：已处理 ' + done + ' 处' + unitNote +
             (failed ? '，跳过 ' + failed + ' 处' : '') +
@@ -712,6 +1476,8 @@ async function DSH_runTable(app, doc, sel, cells, count, mode, diagnoseOnly, dia
     if (!(s1 > s0)) { s0 = 0; s1 = 2147483647; }   // 拿不到就退回"整格"
 
     var jobs = [], total = 0, i;
+    /* （改单位）模式下，圈定范围要连同紧跟数字的金额单位一起扩——数字和单位同进同出 */
+    var wantUnit = DSH_effOpts().unitConvert === true && (mode === 'mul' || mode === 'div');
     for (i = 1; i <= count; i++) {
         var cell = await DSH_R(cells.Item(i));
         if (!cell) continue;
@@ -721,12 +1487,31 @@ async function DSH_runTable(app, doc, sel, cells, count, mode, diagnoseOnly, dia
         var c1 = Number((await DSH_P(cr, 'End')) || 0);
         var a = Math.max(s0, c0), b = Math.min(s1, c1);
         if (!(b > a)) continue;
-        var part = await DSH_R(doc.Range(a, b));
-        if (!part) continue;
-        var t = String((await DSH_P(part, 'Text')) || '');
-        var ch = DshEngine.compute(t, mode, DSH_effOpts());
+        /* 模糊识别（表格版）：选区边界切进格内数字时，以【整格文本】为上下文，
+           把与选区重叠的完整数字圈出来，只对圈定范围内的变更写回。
+           整格文本天然包含格内日期/文号等保护上下文；格子小，不用再扩窗口。 */
+        var cellText = String((await DSH_P(cr, 'Text')) || '');
+        /* 格内位置 → 格内下标：同一套换算（格尾那个 \x07 也不占位置） */
+        var span = DshEngine.expandSpan(
+            cellText,
+            DshEngine.idxFromPos(cellText, a - c0),
+            DshEngine.idxFromPos(cellText, b - c0),
+            wantUnit);
+        var ch, base, t;
+        if (span) {
+            ch = DshEngine.filterChanges(
+                DshEngine.compute(cellText, mode, DSH_effOpts()), span.s, span.e);
+            base = c0;
+            t = cellText;
+        } else {
+            var part = await DSH_R(doc.Range(a, b));
+            if (!part) continue;
+            t = String((await DSH_P(part, 'Text')) || '');
+            ch = DshEngine.compute(t, mode, DSH_effOpts());
+            base = a;
+        }
         total += ch.length;
-        if (ch.length) jobs.push({ base: a, changes: ch, text: t });
+        if (ch.length) jobs.push({ base: base, changes: ch, text: t });
     }
     diag.push('可处理处数=' + total);
 
@@ -754,7 +1539,10 @@ async function DSH_runTable(app, doc, sel, cells, count, mode, diagnoseOnly, dia
         for (var k = job.changes.length - 1; k >= 0; k--) {
             var c = job.changes[k];
             try {
-                var rr = await DSH_R(doc.Range(job.base + c.start, job.base + c.start + c.length));
+                /* 同 DSH_run：job.text 是读回来的文本，c.start 是它的下标，写回先换算成位置 */
+                var wA2 = job.base + DshEngine.posFromIdx(job.text, c.start);
+                var wB2 = job.base + DshEngine.posFromIdx(job.text, c.start + c.length);
+                var rr = await DSH_R(doc.Range(wA2, wB2));
                 if (!rr) { failed++; continue; }
                 var cur = String((await DSH_P(rr, 'Text')) || '');
                 if (cur !== c.old) { failed++; continue; }
@@ -802,11 +1590,11 @@ async function DSH_fillSequence() {
         if (!sel) sel = await DSH_P(app, 'Selection');
         if (!sel) { DSH_say('拿不到 Selection。'); return; }
 
-        // 选区在表格里才有 Cells；不在表格里 Count 为 0
+        // 选区在表格里才有 Cells；不在表格里 Count 为 0 → 走正文段落分支
         var cells = await DSH_P(sel, 'Cells');
         var count = cells ? Number((await DSH_P(cells, 'Count')) || 0) : 0;
         if (!count) {
-            DSH_say('请先在表格中选中要填序号的那一列（或一段连续单元格），再点「填充序号」。');
+            await DSH_fillSequenceParagraphs(doc, sel, diag);
             return;
         }
         diag.push('选中单元格数=' + count);
@@ -867,6 +1655,137 @@ async function DSH_fillSequence() {
     } catch (e) {
         DSH_say('便捷插件 · 填充序号出错：' + (e && e.message ? e.message : e) + '\n\n' + diag.join('\n'));
     }
+}
+
+/* ======================= 填充序号 · 正文段落（v1.11.0） =======================
+
+   与表格版的关系：同一张格式表、同一个起始值、同一条「已有编号保留原值」的语义。
+   唯一的实质差别是"空格"的定义 —— 表格里空格是空单元格，
+   正文里空格是"段首没有序号标记"，所以判定从"整格是否为空"变成"段首那一截是不是序号"。
+
+   写回只碰【段首那一截】，不重写整段。整段重写会连加粗、字体、修订痕迹
+   一起抹掉——那是不可接受的副作用，也是正文版与表格版最大的实现分歧。 */
+async function DSH_fillSequenceParagraphs(doc, sel, diag) {
+    /* ---- ① 不再要求"选区必须从段首开始"（2026-10-22 用户要求）----
+       旧版会拦：选区起点不在段首就弹「请从段首开始拉选区」，用户选了半天被一句话打回。
+
+       现在的规则：**只要有选区，就把选区覆盖到的所有段落都编号**（空行照旧跳过）。
+
+       为什么放开是安全的 —— 关键在【序号插在哪里】：
+         写回地址用的是【段落自身的 Range.Start】（见下面 metas 那行），
+         也就是序号永远落在**段落的开头**，与选区从哪儿开始、结束在哪儿都无关。
+         旧注释里"会在句子中间插进一个序号"担心的那个场景，
+         在现在的写回实现里并不存在 —— 插号位置取的是段落起点，不是选区起点。
+
+       选区只盖住半句时，被编号的是【那一整段】（序号加在段首），
+       这也正是"识别所有段落"该有的样子。 */
+    var selRaw = String((await DSH_P(sel, 'Text')) || '');
+    var hasSel = DSH_trim(selRaw).length > 0;
+    diag.push('正文选区长度=' + DSH_trim(selRaw).length);
+    diag.push('选区范围=' + (hasSel ? '按选区覆盖的全部段落处理（不再要求从段首开始）' : '无选区：处理光标所在段落'));
+
+    /* ---- ② 逐段取文本 ---- */
+    var paras = await DSH_P(sel, 'Paragraphs');
+    if (!paras) {
+        var sr = await DSH_P(sel, 'Range');
+        if (sr) paras = await DSH_P(sr, 'Paragraphs');
+    }
+    var pn = paras ? Number((await DSH_P(paras, 'Count')) || 0) : 0;
+    if (!pn) {
+        DSH_say('便捷插件 · 填充序号：没读到段落。\n\n' + diag.join('\n'));
+        return;
+    }
+    diag.push('段落数=' + pn);
+
+    var metas = [], texts = [], skipped = 0, i, p, r, t, inTbl;
+    for (i = 1; i <= pn; i++) {
+        p = await DSH_R(paras.Item(i));
+        if (!p) { metas.push(null); texts.push(''); continue; }
+        r = await DSH_P(p, 'Range');
+        if (!r) { metas.push(null); texts.push(''); continue; }
+        t = String((await DSH_P(r, 'Text')) || '');
+        /* 表格内的段落一律跳过：表格走的是另一条路径（选中一列）。
+           在这里再编一次号会把表格里已经排好的序号冲掉。
+           判断用两手：段落文本里带 \x07（单元格结束符），或 Information(12)=wdWithInTable。 */
+        inTbl = (t.indexOf('\x07') >= 0);
+        if (!inTbl) {
+            try { if (await DSH_R(r.Information(12))) inTbl = true; } catch (e) { }
+        }
+        if (inTbl) { metas.push(null); texts.push(''); skipped++; continue; }
+        metas.push({ p: p, start: Number(await DSH_P(r, 'Start')) });
+        texts.push(t);
+    }
+    if (skipped) diag.push('跳过表格内段落=' + skipped);
+
+    /* ---- ③ 算方案（纯逻辑，见 DshEngine.seqPlanParagraphs） ---- */
+    var plan = DshEngine.seqPlanParagraphs(texts, DSH_OPTIONS.seqStart, DSH_OPTIONS.seqRenumberAll, DSH_SEQ_INDEX);
+    diag.push('需处理=' + plan.length + ' 段，格式=' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX) +
+              (DSH_OPTIONS.seqRenumberAll ? '（全量重编号）' : ''));
+    if (!plan.length) {
+        DSH_quiet('该选区里没有可编号的段落（全是空行）。');
+        return;
+    }
+
+    /* ---- ④ 倒序写回 ----
+       改写会让后面段落的字符位置整体平移，从最后一段往前写，前面段落的 Start 始终有效。
+       这是本项目所有"批量改文本"路径的统一做法（与表格版逐格倒写同理）。 */
+    var done = 0, failed = 0, unchanged = 0;
+    for (i = plan.length - 1; i >= 0; i--) {
+        var item = plan[i];
+        var m = metas[item.index];
+        if (!m) { failed++; continue; }
+        try {
+            // 已经就是该格式 → 不写。开修订时重写相同内容会白留一条修订痕迹。
+            if (item.oldPrefix === item.prefix) { unchanged++; continue; }
+
+            var body = String(texts[item.index] == null ? '' : texts[item.index])
+                .replace(/[\r\n\u0007\u0001\u0002]/g, '');
+            var wA = m.start + DshEngine.posFromIdx(body, item.start);
+            var wB = m.start + DshEngine.posFromIdx(body, item.start + item.length);
+            var tr = await DSH_R(doc.Range(wA, wB));
+            if (!tr) { failed++; continue; }
+
+            /* 写入前核对旧内容：位置只要算偏一个字符，就会把正文中间的字换掉。
+               这是正文版唯一的保险丝，不能省。length=0（插入）时期望读到空串。 */
+            var cur = String((await DSH_P(tr, 'Text')) || '');
+            if (cur !== item.oldPrefix) {
+                failed++;
+                if (diag.length < 14) diag.push('位置不符: 期望' + JSON.stringify(item.oldPrefix) + ' 实得' + JSON.stringify(cur));
+                continue;
+            }
+
+            tr.Text = item.prefix;
+
+            // 写回自检：Range 在赋值后可能被重置，读不到就另取一段核对
+            var back = String((await DSH_P(tr, 'Text')) || '');
+            if (back !== item.prefix) {
+                var vr = await DSH_R(doc.Range(wA, wA + item.prefix.length));
+                back = String((await DSH_P(vr, 'Text')) || '');
+            }
+            if (back !== item.prefix) {
+                failed++;
+                if (diag.length < 14) diag.push('写回不符: ' + JSON.stringify(back));
+                continue;
+            }
+            done++;
+        } catch (e) {
+            failed++;
+            if (diag.length < 14) diag.push('写入异常: ' + (e && e.message ? e.message : e));
+        }
+    }
+
+    if (done === 0 && unchanged > 0 && failed === 0) {
+        DSH_quiet('填充序号（正文）：' + unchanged + ' 段已经就是该格式，无需改动。');
+        return;
+    }
+    if (done === 0) {
+        DSH_say('便捷插件 · 填充序号（正文）：一段也没改成功。\n\n' + diag.join('\n'));
+        return;
+    }
+    DSH_quiet('填充序号（正文）：写入 ' + done + ' 段' +
+              (unchanged ? '，' + unchanged + ' 段已符合' : '') +
+              (failed ? '，失败 ' + failed + ' 段' : '') +
+              '，格式=' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX));
 }
 
 /* ======================= 区域求和 ======================= */
@@ -971,28 +1890,58 @@ function DSH_showSum(sumText, count) {
     var url = base + 'dialog_sum.html?sum=' + encodeURIComponent(sumText) +
               '&cnt=' + encodeURIComponent(String(count));
 
+    /* 【2026-10-21 修复 ERR_FILE_NOT_FOUND 白屏】
+       背景：ShowDialog 只要 URL 语法没错就"调用成功"，页面加载失败它不抛异常。
+       发版时若 WPS 未完全退出，旧版目录被删，内存里的页面 base 就指向不存在的目录，
+       对话框弹出却是「页面加载失败 ERR_FILE_NOT_FOUND:-6」——用户看到白屏，
+       而我们的兜底 alert 永远不会执行（因为没抛异常）。
+
+       对策：弹之前先【同步探测文件在不在】，探不到就直接走 alert 兜底，
+       不弹那个注定白屏的窗。
+       · 用同步 XHR 而非 fetch：本函数是普通 function（不是 async），不能 await；
+         且对话框本就要在此刻弹出，异步探测会来不及。
+       · XMLHttpRequest 必须先用 typeof 守卫（WPS 某些引擎不暴露它）——
+         直接引用会让 ReferenceError 被外层 catch 吞掉，探测形同虚设。
+       · 任何异常一律视为"可用"，不让探测本身成为新故障点。 */
+    var pageOK = true;
+    try {
+        if (typeof XMLHttpRequest === 'function' && /^file:/i.test(base)) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('HEAD', base + 'dialog_sum.html', false);   // false = 同步
+            try {
+                xhr.send(null);
+                // file:// 下成功通常 status=0；被拒则抛异常，落到 catch 保持 pageOK=true
+                pageOK = (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 400));
+            } catch (e2) { pageOK = true; }
+            if (!pageOK) DSH_quiet('对话框页面不存在，改用弹窗兜底: ' + base + 'dialog_sum.html');
+        }
+    } catch (e) { pageOK = true; }
+
     // 有些环境会裁剪 query，这里再往 PluginStorage 存一份兜底
     try { if (window.wps && wps.PluginStorage) { wps.PluginStorage.setItem('dshLastSum', sumText); } } catch (e) { }
 
     var dpr = 1;
     try { dpr = window.devicePixelRatio || 1; } catch (e) { }
 
-    try {
-        if (window.wps && typeof wps.ShowDialog === 'function') {
-            wps.ShowDialog(url, '区域求和', Math.round(400 * dpr), Math.round(190 * dpr), true);
-            return;
-        }
-    } catch (e) { }
-    try {
-        if (window.wps && wps.Dialog && typeof wps.Dialog.openDialog === 'function') {
-            wps.Dialog.openDialog({ title: '区域求和', width: 400, height: 190, url: url });
-            return;
-        }
-    } catch (e) { }
+    if (pageOK) {
+        try {
+            if (window.wps && typeof wps.ShowDialog === 'function') {
+                wps.ShowDialog(url, '区域求和', Math.round(400 * dpr), Math.round(190 * dpr), true);
+                return;
+            }
+        } catch (e) { }
+        try {
+            if (window.wps && wps.Dialog && typeof wps.Dialog.openDialog === 'function') {
+                wps.Dialog.openDialog({ title: '区域求和', width: 400, height: 190, url: url });
+                return;
+            }
+        } catch (e) { }
+    }
 
     // 兜底：至少让结果可见（文本不可选中）
     DSH_say('区域求和\n\n数字个数：' + count + '\n合计：' + sumText +
-            '\n\n（本机未能弹出可复制窗口，请手动抄录）');
+            (pageOK ? '\n\n（本机未能弹出可复制窗口，请手动抄录）'
+                    : '\n\n（对话框页面缺失，已改用此弹窗；新版重新安装后即可恢复可复制窗口）'));
 }
 
 /* 功能区对象：切换格式后必须主动失效控件，WPS 不会因为 onAction 自动重查 getLabel */
