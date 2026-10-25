@@ -36,6 +36,15 @@ var DSH_OPTIONS = {
     seqStart: 1,            // 填充序号的起始值
     seqRenumberAll: false,  // true = 选区内有内容的数字格也一律重新编号；
                             // false = 保留原有数值，只重新套用选定格式
+    seqMode: 'auto',       // 正文填充序号的两种模式（v1.12.0）：
+                            //  'auto'  = 自动判定：选区第一个非空段落带序号 → 统一格式模式，
+                            //            否则 → 填充编号模式（默认）
+                            //  'fill'  = 强制填充编号（选区覆盖的段落全部按顺序编号）
+                            //  'unify' = 强制统一格式（只改已经带序号的段落，其余不动）
+                            // 为什么需要 unify：Ctrl 多选在 WPS 桌面接口下读不到多选区
+                            // （Selection.Range 只代表其中一块，实测 Areas.Count 恒为 0），
+                            // 而连续选区会把中间正文也编号 —— unify 正好补这个缺口：
+                            // 从第一处序号拖到最后一处序号，只重写带序号的那些。
     updateCheck: true,      // 启动后检查一次新版本。失败【完全静默】，绝不影响任何功能
     useUpdater: true        // 发现新版就【自动下载并覆盖安装】，无需用户操作。
                             // 走 fetch 下载（GitHub Pages 送 ACAO:*，file:// 页面也能取）
@@ -45,7 +54,7 @@ var DSH_OPTIONS = {
 
 /* 版本与加载项目录名。改版本时必须同步改这两行、以及各安装脚本里的 $Version——
    test.js 里有断言守住这两处一致，防止升级时漏改。 */
-var DSH_VERSION = '1.11.8';
+var DSH_VERSION = '1.14.2';
 var DSH_ADDON_DIR = 'BianjieTools_' + DSH_VERSION;
 
 /* ======================= 引擎（与平台无关，可在 Node 下测试） ======================= */
@@ -683,6 +692,47 @@ var DshEngine = (function () {
         return out;
     }
 
+    /* 判断一个段落的 Shadow 标记值算不算"被选中"（v1.13.0）。
+       实测值域（WPS COM 探针，2026-10-24）：
+         -1       = 已标记（整段在选区内）
+         9999999  = 混合（半段在选区内，段尾标记没被选中）
+         0 / false= 未标记
+       安全取向：**读不到 / 空值一律按未标记**（漏编号看得见，误编号改坏正文）。 */
+    function seqIsMarked(sv) {
+        if (sv === null || sv === undefined || sv === false || sv === '') return false;
+        var n = Number(sv);
+        if (isNaN(n)) return false;   // 读不出值，按未标记处理
+        return n !== 0;
+    }
+
+    /* 清除回车和空格（v1.14.0）——纯逻辑，便于单测。
+       场景：从 PDF / 网页复制的文字，每行一个回车、行首行尾带空格，
+       需要拼成一段连续的文字。
+       规则：
+         · 删除所有回车：段落标记 \r、\n，软回车 \v（Shift+Enter）
+         · 删除所有空格：半角 ' '、不间断 \u00A0、全角\u3000
+         · 【边界保护】原文以回车结尾时保留最后一个：
+           从 PDF 复制的碎行往往整行选中（含段尾回车），连它也删掉，
+           下一段会被并进来——用户只想把选中的几行拼成一段。
+         · 制表符 \t 不动（"空格"不含制表符，避免误伤缩进）
+       返回 { text, breaks, spaces }。 */
+    function cleanBreaks(raw) {
+        var t = String(raw == null ? '' : raw);
+        var last = t.charAt(t.length - 1), tail = '';
+        if (last === '\r' || last === '\n' || last === '\v') tail = last;
+        var breaks = 0, spaces = 0, out = '', i, ch;
+        for (i = 0; i < t.length; i++) {
+            ch = t.charAt(i);
+            if (ch === '\r' || ch === '\n' || ch === '\v') {
+                if (i === t.length - 1) continue;   // 尾巴单独保留
+                breaks++; continue;
+            }
+            if (ch === ' ' || ch === '\u00A0' || ch === '\u3000') { spaces++; continue; }
+            out += ch;
+        }
+        return { text: out + tail, breaks: breaks, spaces: spaces };
+    }
+
     /* ============ 位置 ↔ 文本下标换算（表格里唯一的坑） ============
        Word 的位置空间里，一个单元格的结束标记 "\r\x07" 占 2 个位置；
        WPS 里只占 1 个 —— 也就是说 \x07 在 WPS 的位置空间里【零宽】。
@@ -828,6 +878,58 @@ var DshEngine = (function () {
             }
         }
         return out;
+    }
+
+    /* 【统一格式模式】只重写"已经带序号"的段落，没有序号的段落一律不动。
+       为什么需要它（2026-10-24 用户反馈）：
+         用户要把散在文档里的三处「（1）（2）（3）」统一改成「01 02 03」。
+         Ctrl 多选做不到（WPS 桌面接口读不到多选区，Selection.Range 只代表一块），
+         而连续选区会把中间那些正文段（"项目由①创新孵化中心…"「其中：」）
+         也当成待编号的段落 —— 那些段没有序号，填序号模式会给它们硬加编号。
+         统一格式模式正好补这个缺口：**从第一处序号拖到最后一处序号，
+         只重写带序号的那些，中间正文原样不动**，一次就能全改完。
+
+       返回的计划项与 seqPlanParagraphs 同构（index/value/start/length/
+       oldPrefix/prefix/neu），写回逻辑可以完全复用。 */
+    function seqPlanUnify(texts, fmtIndex) {
+        var out = [], i;
+        for (i = 0; i < texts.length; i++) {
+            var body = String(texts[i] == null ? '' : texts[i]).replace(/[\r\n\u0007\u0001\u0002]/g, '');
+            if (body.replace(/[\s\u3000]/g, '') === '') continue;   // 空段：不动
+            var lead = seqParaLead(body);
+            if (!lead || lead.value === null) continue;             // 没有序号 → 不动
+            if (lead.end <= lead.start) continue;
+            var prefix = seqPrefixFor(fmtIndex, lead.value);
+            out.push({
+                index: i,
+                value: lead.value,
+                start: lead.start,
+                length: lead.end - lead.start,
+                oldPrefix: body.slice(lead.start, lead.end),
+                prefix: prefix,
+                neu: body.slice(0, lead.start) + prefix + body.slice(lead.end)
+            });
+        }
+        return out;
+    }
+
+    /* 自动判定该用哪种模式（v1.12.0）。
+       判据：**选区里第一个非空段落有没有序号**。
+         · 有  → 统一格式模式（用户八成是来"换格式"的）
+         · 没有 → 填充模式（用户是来"从头编号"的）
+       为什么用"第一个段落"而不是"有没有序号"：
+         混合选区（有号的 + 没号的）若一律按"有没有"判，会让"从头编号"
+         的用法失效——那正是这个功能最初要干的事。
+       手动覆盖：DSH_OPTIONS.seqMode = 'fill' | 'unify' | 'auto'。 */
+    function seqPickMode(texts) {
+        var i, body, lead;
+        for (i = 0; i < texts.length; i++) {
+            body = String(texts[i] == null ? '' : texts[i]).replace(/[\r\n\u0007\u0001\u0002]/g, '');
+            if (body.replace(/[\s\u3000]/g, '') === '') continue;   // 跳过空行
+            lead = seqParaLead(body);
+            return (lead && lead.value !== null) ? 'unify' : 'fill';
+        }
+        return 'fill';
     }
 
     /* ================= 正文段落序号（v1.11.0） =================
@@ -1057,6 +1159,88 @@ var DshEngine = (function () {
         return 0;
     }
 
+    /* 多选区段落合并（v1.11.9）。
+       输入：若干选区各自读到的段落记录 [{start, text}]
+       输出：按【文档位置】排序、去掉重复段落后的列表。
+       为什么要有这个：WPS 里可以用 Ctrl 选多个不连续的块，
+       而插件若只按 Selection.Range 取段落，就只会看到其中一块 ——
+       表现是"三个标题只编了一个"。
+       排序是必须的：多个选区返回的顺序不保证与文档顺序一致，
+       序号必须按文档顺序发，否则会出现"第二个标题编成（1）"。
+       去重也是必须的：相邻选区可能共享边界段落。 */
+    function seqMergeAreas(records) {
+        var seen = {}, out = [], i, r, k;
+        for (i = 0; i < (records || []).length; i++) {
+            r = records[i];
+            if (!r) continue;
+            k = String(r.start);
+            if (seen[k]) continue;
+            seen[k] = true;
+            out.push(r);
+        }
+        out.sort(function (a, b) { return a.start - b.start; });
+        return out;
+    }
+
+    /* 生成给人看的摘要（v1.11.9）。
+       为什么要有：正文填充序号一旦"没填全"，用户无从判断是
+       选区没读到、还是段落跳过了、还是写入失败。
+       以前成功走 console（用户看不到）、失败只弹一句"一段也没改成功"。
+       现在一律弹摘要：选区数 / 段落数 / 写入 / 已符合 / 失败 / 跳过，
+       外加前几段的内容，让人一眼看出插件到底处理了哪几段。 */
+    function seqSummary(o) {
+        var L = [];
+        L.push('填充序号（正文）');
+        L.push('');
+        L.push('选区 ' + (o.areaCount || 1) + ' 个 ｜ 段落 ' + (o.paraCount || 0) + ' 段' +
+               (o.skipped ? '（表格内跳过 ' + o.skipped + '）' : ''));
+        L.push('写入 ' + (o.done || 0) + ' ｜ 已符合 ' + (o.unchanged || 0) +
+               ' ｜ 失败 ' + (o.failed || 0));
+        L.push('格式：' + (o.format || ''));
+        if (o.changes && o.changes.length) {
+            L.push('');
+            L.push('编号改动：');
+            for (var c = 0; c < o.changes.length; c++) L.push('  ' + o.changes[c]);
+        }
+        if (o.snips && o.snips.length) {
+            L.push('');
+            L.push('处理到的段落：');
+            for (var i = 0; i < o.snips.length; i++) L.push('  ' + o.snips[i]);
+        }
+        if (o.probe && o.probe.length) {
+            L.push('');
+            L.push('接口探测：' + o.probe.join('、'));
+        }
+        if (o.notes && o.notes.length) {
+            L.push('');
+            for (var j = 0; j < o.notes.length; j++) L.push(o.notes[j]);
+        }
+        return L.join('\n');
+    }
+
+    /* 要不要弹窗？（v1.11.11）
+       用户明确要求：成功就别弹了，多麻烦。
+       判据只看【有没有需要人处理的事】：
+         · 失败 > 0            → 弹（错误必须可见）
+         · 什么都没发生        → 弹（选区全是空行之类，属于异常）
+         · 写成了 / 已经符合    → 不弹（成果已经摆在文档里了，再弹一遍是打扰）
+       结果不丢：成功信息改放在功能区菜单标题上（见 seqStatusText）。 */
+    function seqNeedPopup(o) {
+        if ((o.failed || 0) > 0) return true;
+        if ((o.done || 0) === 0 && (o.unchanged || 0) === 0) return true;
+        return false;
+    }
+
+    /* 功能区标题上的状态文字：成功也让人看得到，但不打断 */
+    function seqStatusText(o) {
+        var bits = [];
+        if (o.done) bits.push((o.mode === 'unify' ? '已统一 ' : '已写入 ') + o.done + ' 段');
+        if (o.unchanged) bits.push(o.done ? (o.unchanged + ' 段已符合') : ('已符合 ' + o.unchanged + ' 段'));
+        if (o.failed) bits.push('失败 ' + o.failed + ' 段');
+        if (!bits.length) bits.push('无可编号段落');
+        return bits.join('，');
+    }
+
     return {
         compute: compute, applyChanges: applyChanges,
         seqPlan: seqPlan, seqFormat: seqFormat, seqParse: seqParse,
@@ -1064,6 +1248,11 @@ var DshEngine = (function () {
         seqFormatLabel: function (i) { return (SEQ_FORMATS[i] || SEQ_FORMATS[0]).label; },
         seqParaLead: seqParaLead, seqPlanParagraphs: seqPlanParagraphs,
         seqPrefixFor: seqPrefixFor, lettersToNumber: lettersToNumber,
+        seqMergeAreas: seqMergeAreas, seqSummary: seqSummary,
+        seqNeedPopup: seqNeedPopup, seqStatusText: seqStatusText,
+        seqPlanUnify: seqPlanUnify, seqPickMode: seqPickMode,
+        seqIsMarked: seqIsMarked,
+        cleanBreaks: cleanBreaks,
         sumNumbers: sumNumbers, formatNumber: formatNumber,
         cmpVersion: cmpVersion,
         expandSpan: expandSpan, filterChanges: filterChanges,
@@ -1573,6 +1762,11 @@ async function DSH_runTable(app, doc, sel, cells, count, mode, diagnoseOnly, dia
 /* 下拉列表当前选中的格式下标；进程内记忆，重启 WPS 回到默认（纯数字） */
 var DSH_SEQ_INDEX = 0;
 
+/* 上次「填充序号」的结果文字（v1.11.11）：显示在功能区菜单标题上。
+   成功时不再弹窗（少打扰），结果靠它传达；空 = 还没操作过。 */
+/* v1.14.0：操作结果不再显示在功能区（用户要求）。成功静默、失败弹窗；
+   控制台里仍留一行 seqStatusText 便于排查。 */
+
 function DSH_stripMarks(s) {
     return String(s == null ? '' : s).replace(/[\s\r\n\u0007\u0001\u0002]/g, '');
 }
@@ -1657,6 +1851,35 @@ async function DSH_fillSequence() {
     }
 }
 
+/* 探测选区对象上可能存在的多选区入口（v1.11.10）。
+   为什么要有：2026-10-24 实测，WPS 桌面版的 Selection.Range 在 Ctrl 多选下
+   只暴露其中一块，而 Areas.Count 恒为 0 —— 文档里查不到多选区该怎么读，
+   只能靠探测确认这台机器到底给不给。
+   探到就用（能支持多选最好），探不到就在摘要里如实列出，
+   下次遇到同类问题不必再从头猜。
+   纯读取、无副作用，探测失败一律忽略。 */
+var SEL_MULTI_PROPS = ['Ranges', 'Areas', 'Selections', 'MultiSelections', 'Blocks', 'Items'];
+
+async function DSH_probeMultiSel(sel, diag) {
+    var found = [], out = [];
+    try {
+        var selRg = await DSH_P(sel, 'Range');
+        for (var i = 0; i < SEL_MULTI_PROPS.length; i++) {
+            var name = SEL_MULTI_PROPS[i], coll = null;
+            if (selRg) { try { coll = await DSH_P(selRg, name); } catch (e) { } }
+            if (!coll) { try { coll = await DSH_P(sel, name); } catch (e2) { } }
+            if (coll === undefined || coll === null) continue;
+            var cnt = -1;
+            try { cnt = Number((await DSH_P(coll, 'Count')) || 0); } catch (e3) { }
+            found.push(name + '(Count=' + cnt + ')');
+            out.push({ name: name, coll: coll, count: cnt });
+        }
+    } catch (e) {
+        diag.push('多选区探测异常(已忽略): ' + (e && e.message ? e.message : e));
+    }
+    return { found: found, hits: out };
+}
+
 /* ======================= 填充序号 · 正文段落（v1.11.0） =======================
 
    与表格版的关系：同一张格式表、同一个起始值、同一条「已有编号保留原值」的语义。
@@ -1665,6 +1888,120 @@ async function DSH_fillSequence() {
 
    写回只碰【段首那一截】，不重写整段。整段重写会连加粗、字体、修订痕迹
    一起抹掉——那是不可接受的副作用，也是正文版与表格版最大的实现分歧。 */
+/* 捕获用户选中的所有段落（含 Ctrl 多选）—— v1.13.0
+   ============================================================
+   背景：Word/WPS 的 Selection.Range 在多选区下只代表【其中一块】
+   （微软 KB 288424 明确写了"VBA 无法遍历非连续选区"），WPS 实测也一样。
+   但同一个 KB 和二十年来的社区实践指出一条公开的绕过路径：
+   **给 Selection 整体设置字体格式，会作用到所有选区块**。
+
+   所以流程是：
+     ① 给整个 Selection 盖一个临时标记 = 字符阴影 Shadow
+        （选 Shadow 的理由：普通公文正文几乎不会用这个效果，误伤面最小）
+     ② 逐段读 Range.Font.Shadow，被标记的就是用户选中的段（含半段混合值）
+     ③ doc.Undo() 精确撤销标记（实测全部回到 0），失败再强制清除
+     ④ 返回这些段落，按文档位置排序后统一编号
+
+   实测依据（2026-10-24，WPS COM 探针，可复跑）：
+     标记值：-1（已标记）/ 9999999（混合，半段被选中）/ 0（未标记）
+     doc.Undo() 后全部回到 0，无残留。
+
+   安全设计：
+     · 只在【有选区】时执行（光标状态下给 Selection 设格式会污染后续输入）
+     · 任何一步失败 → 返回 null，调用方退回单选区路径（行为不变）
+     · 段落过多（>1000）时跳过，避免逐段异步读取卡住大文档
+     · 清除标记与设标记同路径、逐段验证（见下方事故记录） */
+async function DSH_captureSelParagraphs(doc, sel, diag) {
+    var marked = [], ok = false;
+    var didMark = false;
+    try {
+        var paras = await DSH_P(doc, 'Paragraphs');
+        var pn = paras ? Number((await DSH_P(paras, 'Count')) || 0) : 0;
+        if (pn > 1000) {
+            diag.push('多选区捕获: 段落过多（' + pn + ' > 1000），跳过以免卡顿');
+            return null;
+        }
+
+        /* 【v1.14.1 关键修复】盖标记前，先把【全文】的字符阴影清零。
+           为什么必须先清零（2026-10-24 用户实测事故"连续使用要么无效，要么连带瞎改"）：
+             标记是"哪段有阴影"，而阴影会**跨次累积**——上一次操作若留下残留，
+             这次扫描会把"上次选过的段落"也算成"这次选中的"，后果：
+               · 模式判定被排在前面的残留段带偏（有序号 → 统一格式）→ 新选的无序号段不动 → 点了像没反应
+               · 或填充模式把上次的段一起重编 → 连带之前的范围瞎改
+             先清零再盖标记，保证"读到的标记必然是本次盖的"，同时自愈被污染的文档。
+           代价：全文原有的字符阴影会被清掉——Shadow 是极少用的装饰效果，
+           且不清零就无法支撑 Ctrl 多选，权衡后接受（README / 悬停提示已写明）。 */
+        var content0 = await DSH_P(doc, 'Content');
+        if (content0) {
+            var cf0 = await DSH_P(content0, 'Font');
+            if (cf0) { try { cf0.Shadow = false; } catch (e0) { } }
+        }
+
+        var font = await DSH_P(sel, 'Font');
+        if (!font) { diag.push('多选区捕获: 拿不到 Selection.Font（退回单选区）'); return null; }
+        try { font.Shadow = true; didMark = true; }
+        catch (e1) {
+            diag.push('多选区捕获: 盖标记失败 ' + (e1 && e1.message ? e1.message : e1));
+            return null;
+        }
+
+        for (var i = 1; i <= pn; i++) {
+            var p = await DSH_R(paras.Item(i));
+            if (!p) continue;
+            var r = await DSH_P(p, 'Range');
+            if (!r) continue;
+            var f = await DSH_P(r, 'Font');
+            var sv = f ? (await DSH_P(f, 'Shadow')) : 0;
+            if (!DshEngine.seqIsMarked(sv)) continue;
+            marked.push({
+                p: p,
+                start: Number(await DSH_P(r, 'Start')),
+                text: String((await DSH_P(r, 'Text')) || '')
+            });
+        }
+        ok = true;
+    } catch (e) {
+        diag.push('多选区捕获异常(已退回单选区): ' + (e && e.message ? e.message : e));
+    }
+
+    /* ---- 清除标记（与设标记同路径，并逐段验证）----
+       【2026-10-24 实测事故】第一版用 doc.Undo() 撤销，它"调用成功"却
+       实际没撤掉阴影，用户文档里三段文字残留了字符阴影（像素级截图确认）。
+       盲信 Undo 的返回值 = 静默改坏文档。现在：
+         ① 与设标记同路径清除（sel.Font.Shadow = false，对称操作）
+         ② 逐段读回验证；不干净就重试，再不行就【中止整个操作】
+       不再用 doc.Undo()：它可能撤掉用户自己的上一步，且结果不可验证。 */
+    if (didMark) {
+        var remain = -1;
+        for (var attempt = 1; attempt <= 2; attempt++) {
+            /* 重新取 Selection/Font —— JSAPI 代理对象可能在长循环后失效 */
+            var sel2 = await DSH_P(doc, 'Selection');
+            if (!sel2) sel2 = sel;
+            var f2 = await DSH_P(sel2, 'Font');
+            if (f2) {
+                try { f2.Shadow = false; } catch (e2) { }
+            }
+            /* 验证：被标记的段落阴影是否真的回到 0（最多抽验 30 段） */
+            remain = 0;
+            for (var k = 0; k < marked.length && k < 30; k++) {
+                try {
+                    var pr = await DSH_P(marked[k].p, 'Range');
+                    var pf = pr ? await DSH_P(pr, 'Font') : null;
+                    var sv2 = pf ? (await DSH_P(pf, 'Shadow')) : 0;
+                    if (DshEngine.seqIsMarked(sv2)) remain++;
+                } catch (e3) { remain++; }
+            }
+            if (remain === 0) break;
+        }
+        if (remain > 0) {
+            diag.push('标记清除失败：' + remain + ' 段仍带字符阴影（已中止本次操作，请选中那几段手动取消阴影：字体设置 Ctrl+D → 取消「阴影」）');
+            return null;
+        }
+        diag.push('标记清除验证通过');
+    }
+    return (ok && marked.length) ? marked : null;
+}
+
 async function DSH_fillSequenceParagraphs(doc, sel, diag) {
     /* ---- ① 不再要求"选区必须从段首开始"（2026-10-22 用户要求）----
        旧版会拦：选区起点不在段首就弹「请从段首开始拉选区」，用户选了半天被一句话打回。
@@ -1684,44 +2021,146 @@ async function DSH_fillSequenceParagraphs(doc, sel, diag) {
     diag.push('正文选区长度=' + DSH_trim(selRaw).length);
     diag.push('选区范围=' + (hasSel ? '按选区覆盖的全部段落处理（不再要求从段首开始）' : '无选区：处理光标所在段落'));
 
-    /* ---- ② 逐段取文本 ---- */
-    var paras = await DSH_P(sel, 'Paragraphs');
-    if (!paras) {
-        var sr = await DSH_P(sel, 'Range');
-        if (sr) paras = await DSH_P(sr, 'Paragraphs');
+    var ranges = [];
+    /* ---- ② 取所有选区（v1.11.9/1.11.10：多路探测 + 降级提示）----
+       背景（2026-10-24 用户实测）：用 Ctrl 选中三个不连续的标题，点「填充序号」，
+       结果只给其中一个改了格式，另外两个没动 —— 表现是"没有完整填充"。
+       原因：Word/WPS 的 Selection.Range 在多选区下只代表【其中一块】，
+       插件据此取 Paragraphs，就只看到那一块的段落。
+
+       对策：把选区对象上所有可能的多选区入口都探一遍
+         ① sel.Range.Areas / sel.Areas
+         ② sel.Ranges / sel.Selections / sel.Blocks / sel.Items（v1.11.10 补充探测）
+       探到 Count>1 的就用（能支持多选最好）；
+       探不到就如实告诉用户"只读到 1 个选区"，并给出**能立刻用的替代做法**：
+         · 逐个标题分别点一次 —— 已带编号的段落会保留原值、只换格式，
+           点几次就统一几次（这是本插件本来就有的语义，不是 workaround）；
+         · 或从第一个拖到最后一个连续选区 —— 但中间正文也会一起被编号。 */
+    var ranges = [], probeFound = [];
+    var probe = await DSH_probeMultiSel(sel, diag);
+    probeFound = probe.found;
+    for (var hi = 0; hi < probe.hits.length; hi++) {
+        var hit = probe.hits[hi];
+        if (hit.count > 1) {
+            diag.push('采用多选区入口 ' + hit.name + '，共 ' + hit.count + ' 块');
+            for (var hj = 1; hj <= hit.count; hj++) {
+                var ar2 = await DSH_R(hit.coll.Item(hj));
+                if (ar2) ranges.push(ar2);
+            }
+            break;
+        }
     }
-    var pn = paras ? Number((await DSH_P(paras, 'Count')) || 0) : 0;
-    if (!pn) {
+    if (!ranges.length) {
+        var oneRg = await DSH_P(sel, 'Range');
+        ranges.push(oneRg || sel);
+    }
+    var areaCount = ranges.length;
+    diag.push('选区数=' + areaCount);
+
+    /* ---- ②b Shadow 捕获：拿到用户真正选中的所有段落（含 Ctrl 多选）----
+       v1.13.0：上面的 ranges 在多选区下只有一块，这里用"临时标记→逐段识别→Undo"
+       的方式拿到全部选中段落。失败或无选区时退回 ranges 路径，行为不变。
+       详见 DSH_captureSelParagraphs 的注释（含微软 KB 288424 的背景）。 */
+    var captured = null;
+    if (hasSel) {
+        captured = await DSH_captureSelParagraphs(doc, sel, diag);
+        if (captured) {
+            diag.push('Shadow 捕获成功：' + captured.length + ' 段（含多选区块）');
+            areaCount = captured.length;   // 每个选中段至少对应一块选区，用作摘要里的"选区数"
+        }
+    }
+
+    /* ---- ③ 逐段取文本（跨选区合并，按文档顺序） ---- */
+    var recs = [], skipped = 0, i, p, r, t, inTbl;
+    if (captured) {
+        /* Shadow 捕获已经拿到段落对象、起点、文本，直接用；
+           表格内段落的过滤跟另一条路径共用下面同一段代码。 */
+        for (i = 0; i < captured.length; i++) {
+            recs.push({ p: captured[i].p, start: captured[i].start, text: captured[i].text });
+        }
+    }
+    for (var ri = 0; ri < ranges.length && !captured; ri++) {
+        var paras = await DSH_P(ranges[ri], 'Paragraphs');
+        if (!paras) {
+            var sr = await DSH_P(ranges[ri], 'Range');
+            if (sr) paras = await DSH_P(sr, 'Paragraphs');
+        }
+        var pn = paras ? Number((await DSH_P(paras, 'Count')) || 0) : 0;
+        if (!pn) continue;
+        for (i = 1; i <= pn; i++) {
+            p = await DSH_R(paras.Item(i));
+            if (!p) continue;
+            r = await DSH_P(p, 'Range');
+            if (!r) continue;
+            t = String((await DSH_P(r, 'Text')) || '');
+            /* 表格内的段落一律跳过：表格走的是另一条路径（选中一列）。
+               在这里再编一次号会把表格里已经排好的序号冲掉。
+               判断用两手：段落文本里带 \x07（单元格结束符），或 Information(12)=wdWithInTable。 */
+            inTbl = (t.indexOf('\x07') >= 0);
+            if (!inTbl) {
+                try { if (await DSH_R(r.Information(12))) inTbl = true; } catch (e) { }
+            }
+            if (inTbl) { skipped++; continue; }
+            recs.push({ p: p, start: Number(await DSH_P(r, 'Start')), text: t });
+        }
+    }
+    /* 两条路径共用的表格内过滤（捕获路径也要跳过表格段） */
+    if (captured) {
+        var kept = [];
+        for (i = 0; i < recs.length; i++) {
+            t = recs[i].text;
+            inTbl = (t.indexOf('\x07') >= 0);
+            if (!inTbl) {
+                try {
+                    var cr = await DSH_P(recs[i].p, 'Range');
+                    if (cr && await DSH_R(cr.Information(12))) inTbl = true;
+                } catch (e) { }
+            }
+            if (inTbl) { skipped++; continue; }
+            kept.push(recs[i]);
+        }
+        recs = kept;
+    }
+    recs = DshEngine.seqMergeAreas(recs);
+    var metas = [], texts = [];
+    for (i = 0; i < recs.length; i++) {
+        metas.push({ p: recs[i].p, start: recs[i].start });
+        texts.push(recs[i].text);
+    }
+    var paraCount = texts.length;
+    diag.push('段落数=' + paraCount);
+    if (skipped) diag.push('跳过表格内段落=' + skipped);
+    if (!paraCount) {
         DSH_say('便捷插件 · 填充序号：没读到段落。\n\n' + diag.join('\n'));
         return;
     }
-    diag.push('段落数=' + pn);
 
-    var metas = [], texts = [], skipped = 0, i, p, r, t, inTbl;
-    for (i = 1; i <= pn; i++) {
-        p = await DSH_R(paras.Item(i));
-        if (!p) { metas.push(null); texts.push(''); continue; }
-        r = await DSH_P(p, 'Range');
-        if (!r) { metas.push(null); texts.push(''); continue; }
-        t = String((await DSH_P(r, 'Text')) || '');
-        /* 表格内的段落一律跳过：表格走的是另一条路径（选中一列）。
-           在这里再编一次号会把表格里已经排好的序号冲掉。
-           判断用两手：段落文本里带 \x07（单元格结束符），或 Information(12)=wdWithInTable。 */
-        inTbl = (t.indexOf('\x07') >= 0);
-        if (!inTbl) {
-            try { if (await DSH_R(r.Information(12))) inTbl = true; } catch (e) { }
-        }
-        if (inTbl) { metas.push(null); texts.push(''); skipped++; continue; }
-        metas.push({ p: p, start: Number(await DSH_P(r, 'Start')) });
-        texts.push(t);
-    }
-    if (skipped) diag.push('跳过表格内段落=' + skipped);
-
-    /* ---- ③ 算方案（纯逻辑，见 DshEngine.seqPlanParagraphs） ---- */
-    var plan = DshEngine.seqPlanParagraphs(texts, DSH_OPTIONS.seqStart, DSH_OPTIONS.seqRenumberAll, DSH_SEQ_INDEX);
-    diag.push('需处理=' + plan.length + ' 段，格式=' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX) +
+    /* ---- ③ 算方案（纯逻辑） ----
+       两种模式（v1.12.0）：
+         填充模式   —— 选区覆盖的段落全部按顺序编号（没有序号的会被加上）
+         统一格式模式 —— 只把【已经带序号】的段落改成当前格式，没有序号的段落一律不动
+       自动判定：看选区第一个非空段落有没有序号。
+         有  → 统一格式模式（用户是来"换格式"的，典型场景：把散在文档里的
+                三处「（1）（2）（3）」一次改成「01 02 03」——
+                Ctrl 多选做不到，只能连续选区，但连续选区会把中间正文也编号，
+                统一格式模式正好只动带序号的那些）
+         没有 → 填充模式（用户是来"从头编号"的）
+       手动覆盖：DSH_OPTIONS.seqMode = 'fill' | 'unify' | 'auto'（默认 auto）。 */
+    var modeOpt = String(DSH_OPTIONS.seqMode || 'auto').toLowerCase();
+    var mode = (modeOpt === 'fill' || modeOpt === 'unify')
+        ? modeOpt
+        : DshEngine.seqPickMode(texts);
+    var plan = (mode === 'unify')
+        ? DshEngine.seqPlanUnify(texts, DSH_SEQ_INDEX)
+        : DshEngine.seqPlanParagraphs(texts, DSH_OPTIONS.seqStart, DSH_OPTIONS.seqRenumberAll, DSH_SEQ_INDEX);
+    diag.push('模式=' + (mode === 'unify' ? '统一格式（只改已有序号）' : '填充编号') +
+              '，需处理=' + plan.length + ' 段，格式=' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX) +
               (DSH_OPTIONS.seqRenumberAll ? '（全量重编号）' : ''));
     if (!plan.length) {
+        if (mode === 'unify') {
+            DSH_quiet('该选区里没有带序号的段落，无需统一格式。');
+            return;
+        }
         DSH_quiet('该选区里没有可编号的段落（全是空行）。');
         return;
     }
@@ -1729,7 +2168,7 @@ async function DSH_fillSequenceParagraphs(doc, sel, diag) {
     /* ---- ④ 倒序写回 ----
        改写会让后面段落的字符位置整体平移，从最后一段往前写，前面段落的 Start 始终有效。
        这是本项目所有"批量改文本"路径的统一做法（与表格版逐格倒写同理）。 */
-    var done = 0, failed = 0, unchanged = 0;
+    var done = 0, failed = 0, unchanged = 0, changes = [];
     for (i = plan.length - 1; i >= 0; i--) {
         var item = plan[i];
         var m = metas[item.index];
@@ -1768,24 +2207,55 @@ async function DSH_fillSequenceParagraphs(doc, sel, diag) {
                 continue;
             }
             done++;
+            /* 记下"改前 → 改后"，摘要里逐条列出：
+               用户要的多半正是"换格式"，光看"写入 1 段"不知道换成了什么。 */
+            changes.push((item.oldPrefix || '（无）') + ' → ' + item.prefix);
         } catch (e) {
             failed++;
             if (diag.length < 14) diag.push('写入异常: ' + (e && e.message ? e.message : e));
         }
     }
 
-    if (done === 0 && unchanged > 0 && failed === 0) {
-        DSH_quiet('填充序号（正文）：' + unchanged + ' 段已经就是该格式，无需改动。');
-        return;
+    /* ---- ⑤ 结果一律弹摘要（v1.11.9）----
+       以前：成功走 console（用户看不到）、失败才弹一句"一段也没改成功"。
+       于是"只填了一部分"这件事对用户完全不可见 —— 他只能看着文档猜。
+       现在：一律弹摘要，含选区数、段落数、写入/已符合/失败/跳过，
+       外加【实际处理到的段落】清单。看得见，才谈得上排查。 */
+    var snips = [];
+    for (i = 0; i < texts.length && snips.length < 6; i++) {
+        var sn = String(texts[i] == null ? '' : texts[i]).replace(/[\r\n\u0007\u0001\u0002]/g, '');
+        snips.push((i + 1) + '. ' + (sn.length > 18 ? sn.slice(0, 18) + '…' : sn));
     }
-    if (done === 0) {
-        DSH_say('便捷插件 · 填充序号（正文）：一段也没改成功。\n\n' + diag.join('\n'));
-        return;
+    var notes = [];
+    if (areaCount === 1 && hasSel && paraCount > 0) {
+        notes.push('【只读到 1 个选区】若你用 Ctrl 选中了多块，本机 WPS 接口读不到多选区（' +
+                   'Selection.Range 只代表其中一块）。可用做法：');
+        notes.push('　① 逐个标题分别点一次「填充序号」——已带编号的段落会保留原值、只换格式，' +
+                   '点几次就统一几次（本功能本来就支持，不是绕路）；');
+        notes.push('　② 或从第一个拖到最后一个连续选区——但中间正文也会一起被编号。');
     }
-    DSH_quiet('填充序号（正文）：写入 ' + done + ' 段' +
-              (unchanged ? '，' + unchanged + ' 段已符合' : '') +
-              (failed ? '，失败 ' + failed + ' 段' : '') +
-              '，格式=' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX));
+    if (failed) {
+        notes.push('失败 ' + failed + ' 段，详情见 WPS 加载项调试器（Alt+F12 → Console）。');
+    }
+    var summary = DshEngine.seqSummary({
+        areaCount: areaCount, paraCount: paraCount, skipped: skipped,
+        done: done, unchanged: unchanged, failed: failed,
+        format: DshEngine.seqFormatLabel(DSH_SEQ_INDEX),
+        snips: snips, notes: notes, changes: changes, probe: probeFound
+    });
+    DSH_quiet(summary);
+
+    /* 【v1.11.11】成功不弹窗；【v1.14.0】连功能区标题上的"已写入 N 段"也去掉了
+       （用户要求：结果看文档本身即可，不用显示使用结果）。
+       成功 → 完全静默，只在控制台留一行 seqStatusText 便于排查；
+       失败 / 什么都没发生 → 照旧弹窗（那是需要人处理的事）。 */
+    DSH_quiet('填充序号结果：' + DshEngine.seqStatusText({
+        done: done, unchanged: unchanged, failed: failed, paraCount: paraCount, mode: mode
+    }));
+
+    if (DshEngine.seqNeedPopup({ done: done, unchanged: unchanged, failed: failed })) {
+        DSH_say(summary);
+    }
 }
 
 /* ======================= 区域求和 ======================= */
@@ -2178,26 +2648,155 @@ function dshFillSequence() { DSH_fillSequence(); return true; }
 /* --- 区域求和 --- */
 function dshSumRegion() { DSH_sumRegion(); return true; }
 
+/* --- 清除回车空格（v1.14.0）---
+   场景（用户定义）：从 PDF / 网页复制的文字，一行一个回车、行首/行尾带空格，
+   选中后点一下，拼成一段连续的文字。
+   语义（用户确认）：PDF 复制来的碎行 + 只处理选区。
+   【为什么不做"没选就处理全文"】这个功能的动作是删除段落标记（把多段并一段），
+   误伤全文的后果不可逆（虽能撤销，但用户未必发现）——选区模式是"你划哪里清哪里"，
+   责任边界清晰。 */
+function dshCleanBreaks() { DSH_cleanBreaks(); return true; }
+
+/* ======================= 清除回车空格（v1.14.0）======================= */
+async function DSH_cleanBreaks() {
+    var diag = [];
+    try {
+        var app = await DSH_getApp(diag);
+        if (!app) {
+            DSH_say('便捷插件 · 清除回车空格：拿不到 WPS 应用对象。\n\n' + diag.join('\n'));
+            return;
+        }
+        var doc = await DSH_P(app, 'ActiveDocument');
+        if (!doc) { DSH_say('请先打开一个文档。'); return; }
+        var sel = await DSH_P(doc, 'Selection');
+        if (!sel) sel = await DSH_P(app, 'Selection');
+        if (!sel) { DSH_say('拿不到 Selection。'); return; }
+
+        /* 没选内容（只是光标）→ 不动手，告诉用户怎么用 */
+        var selRaw = String((await DSH_P(sel, 'Text')) || '');
+        if (DSH_trim(selRaw).length === 0) {
+            DSH_say('便捷插件 · 清除回车空格\n\n请先【选中】要清理的那段文字——这个功能只处理选区，不动选区以外的内容。\n\n典型用法：从 PDF 复制进来的文字一行一个回车、行首带空格，全部选中后点一下，就拼成一段连续文字。');
+            return;
+        }
+
+        var rng = await DSH_P(sel, 'Range');
+        if (!rng) rng = sel;
+        var orig = String((await DSH_P(rng, 'Text')) || '');
+        var s0 = Number(await DSH_P(rng, 'Start'));
+
+        /* 含表格单元格结束符 \x07 时拒绝：整体重写选区文本会破坏表格结构 */
+        if (orig.indexOf('\x07') >= 0) {
+            DSH_say('便捷插件 · 清除回车空格\n\n选区里有表格。请在正文里使用本功能；表格内请逐个单元格清理，否则整体重写会破坏表格。');
+            return;
+        }
+
+        var r = DshEngine.cleanBreaks(orig);
+        if (!r.breaks && !r.spaces) {
+            DSH_say('便捷插件 · 清除回车空格\n\n选区里没有回车或空格可清。');
+            return;
+        }
+
+        /* 写回：整体替换选区文本（与项目其它"批量改文本"路径同一种写法） */
+        rng.Text = r.text;
+        var back = String((await DSH_P(rng, 'Text')) || '');
+        if (back !== r.text) {
+            var vr = await DSH_R(doc.Range(s0, s0 + r.text.length));
+            if (vr) back = String((await DSH_P(vr, 'Text')) || '');
+        }
+        if (back !== r.text) {
+            DSH_say('便捷插件 · 清除回车空格：写回失败（内容核对不上）。\n\n' + diag.join('\n'));
+            return;
+        }
+        DSH_quiet('清除回车空格：删除回车 ' + r.breaks + ' 个、空格 ' + r.spaces + ' 个');
+    } catch (e) {
+        DSH_say('便捷插件 · 清除回车空格出错：' + (e && e.message ? e.message : e) + '\n\n' + diag.join('\n'));
+    }
+}
+
 /* --- 检查更新 --- */
 function dshCheckUpdate() { DSH_checkUpdate(true); return true; }
 
+/* 切换序号格式（v1.14.2 重写）
+   ============================================================
+   用户反馈的两条（2026-10-25）：
+     ① 按钮上显示的格式固定不变，选了别的模板也不跟着变；
+     ② 选一次模板后，应该"不仅改模板，还等效点一次填充序号"。
+
+   ① 的原因：splitButton 里的按钮是【二级控件】，WPS 只对分裂按钮根节点
+      重取 getLabel，对内部 button 不重取 —— 只 Invalidate('dshBtnSeq') 无效。
+      对策：把分裂按钮可刷新的 id 全刷一遍（根 + 子 + 菜单），并加
+            Invalidate() 整表兜底（不同版本 WPS 生效范围不同，多刷不亏）。
+
+   ② 的行为设计（有边界，避免误伤）：
+      · 有选区 → 立即按新格式执行一次填充/统一（用户要的"选完即生效"）
+      · 无选区 → 只记下格式，不往光标处插号
+      为什么不无条件执行：光标状态下的"填充序号"会给光标所在段落插号，
+      用户只是想换个模板时突然被加个序号，属于意外改动。 */
 function DSH_setSeqFormat(i) {
-    if (i >= 0 && i < DshEngine.seqFormatCount) {
-        DSH_SEQ_INDEX = i;
-        DSH_quiet('序号格式切换为 ' + DshEngine.seqFormatLabel(i));
-        // 让菜单标题立刻刷新成新格式
-        try {
-            if (DSH_RIBBON && DSH_RIBBON.InvalidateControl) {
-                DSH_RIBBON.InvalidateControl('dshSeqMenu');
-            }
-        } catch (e) { }
-    }
+    if (i < 0 || i >= DshEngine.seqFormatCount) return true;
+    DSH_SEQ_INDEX = i;
+    DSH_quiet('序号格式切换为 ' + DshEngine.seqFormatLabel(i));
+    DSH_refreshSeqRibbon();
+    /* 格式记下之后，趁热把当前选区套用一次（equiv 点一次「填充序号」） */
+    DSH_autoApplySeq();
     return true;
 }
 
-/* 菜单标题上显示当前格式 */
+/* 让分裂按钮上的"当前格式"立刻刷新。
+   多路刷新是刻意的：WPS 各版本对 splitButton 子控件的 InvalidateControl
+   响应不一致（实测 v1.14.1 只刷子按钮没反应），所以把根/子/菜单都刷，
+   再兜底一次整表 Invalidate()。任何一步失败都吞掉，不影响功能。 */
+function DSH_refreshSeqRibbon() {
+    var ids = ['dshSeqSplit', 'dshBtnSeq', 'dshSeqMenu'];
+    try {
+        if (!DSH_RIBBON) return;
+        for (var k = 0; k < ids.length; k++) {
+            try {
+                if (DSH_RIBBON.InvalidateControl) DSH_RIBBON.InvalidateControl(ids[k]);
+            } catch (e1) { }
+        }
+        try { if (DSH_RIBBON.Invalidate) DSH_RIBBON.Invalidate(); } catch (e2) { }
+    } catch (e) { }
+}
+
+/* 选完格式后自动套用一次（等效点一次「填充序号」）。
+   边界：**只有当前有选区时才动手**。
+     没有选区时点填充序号 = 给光标所在段落插号——用户只是换模板，
+     突然被加个序号属于意外改动，所以那种情况只记格式、不执行。 */
+async function DSH_autoApplySeq() {
+    try {
+        var diag = [];
+        var app = await DSH_getApp(diag);
+        if (!app) return;
+        var doc = await DSH_P(app, 'ActiveDocument');
+        if (!doc) return;
+        var sel = await DSH_P(doc, 'Selection');
+        if (!sel) sel = await DSH_P(app, 'Selection');
+        if (!sel) return;
+        var t = String((await DSH_P(sel, 'Text')) || '');
+        if (DSH_trim(t).length === 0) {
+            DSH_quiet('已切换序号格式；当前没有选区，未自动套用（选中段落后点「填充序号」即可）');
+            return;
+        }
+        await DSH_fillSequence();
+    } catch (e) {
+        /* 自动套用失败不能影响"换格式"这个主诉求，静默记录 */
+        DSH_quiet('选完格式后自动套用失败（格式已切换，可手动点填充序号）：' +
+                  (e && e.message ? e.message : e));
+    }
+}
+
+/* 按钮标题上显示当前格式（v1.14.0 起：分裂按钮主体用）。
+   【v1.14.0 变更】不再显示"已写入 N 段"这类操作结果（用户要求，
+   结果看文档本身即可）。成功完全静默（只写控制台），失败/异常才弹窗。
+   保留当前格式显示：点之前知道"会用什么格式"是必要的，它不是结果。 */
+function dshSeqButtonLabel(control) {
+    return '填充序号 · ' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX);
+}
+
+/* 菜单（分裂按钮的下拉部分）标题：菜单里也标一下当前格式，点开就知道选了哪个。 */
 function dshSeqMenuLabel(control) {
-    return '序号格式：' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX);
+    return '选择序号格式（当前：' + DshEngine.seqFormatLabel(DSH_SEQ_INDEX) + '）';
 }
 
 /* 八个格式项各挂一个固定名字的回调。
@@ -2232,6 +2831,8 @@ try {
         window.dshCheckUpdate = dshCheckUpdate;
         window.dshCheckUpdateLabel = dshCheckUpdateLabel;
         window.dshSeqMenuLabel = dshSeqMenuLabel;
+        window.dshSeqButtonLabel = dshSeqButtonLabel;
+        window.dshCleanBreaks = dshCleanBreaks;
         window.dshSeqPick0 = dshSeqPick0;
         window.dshSeqPick1 = dshSeqPick1;
         window.dshSeqPick2 = dshSeqPick2;

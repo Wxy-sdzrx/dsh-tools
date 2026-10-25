@@ -44,23 +44,32 @@
                   supertip="数字 ÷10000，紧跟其后的金额单位同步换算（元→万元、万元→亿元），金额本身不变；没有单位的默认按「元」处理并补上单位。外币（美元等）单位不动。光标/选区挨着数字时只处理该完整数字。" />
         </group>
         <group id="dshSeqGroup" label="序号">
-          <button id="dshBtnSeq" label="填充序号"
-                  onAction="dshFillSequence"
-                  screentip="表格选一列 / 正文选几段，填序号"
-                  supertip="【表格】选中一列（或连续单元格）：空单元格按顺序补号，已有编号保留原值只重套格式，表头文字格不动。【正文】从段首开始选中若干段落：按段落顺序编号，段首已有「1、」「（一）」的会被替换成当前格式，空行跳过不占号，表格内段落不动。" />
-          <menu id="dshSeqMenu" label="序号格式"
-                getLabel="dshSeqMenuLabel"
-                screentip="选择填充序号时使用的格式"
-                supertip="点开选择。当前格式会显示在按钮上。正文里，「1 2 3」「一 二 三」「A B C」这类不带分隔符的格式会自动补顿号（1、 一、 A、），否则序号会和正文第一个字黏在一起。">
-            <button id="dshSeqFmt0" label="1   2   3"         onAction="dshSeqPick0" />
-            <button id="dshSeqFmt1" label="01   02   03"      onAction="dshSeqPick1" />
-            <button id="dshSeqFmt2" label="1、  2、  3、"      onAction="dshSeqPick2" />
-            <button id="dshSeqFmt3" label="（1）（2）（3）"    onAction="dshSeqPick3" />
-            <button id="dshSeqFmt4" label="一   二   三"      onAction="dshSeqPick4" />
-            <button id="dshSeqFmt5" label="（一）（二）（三）"  onAction="dshSeqPick5" />
-            <button id="dshSeqFmt6" label="①   ②   ③"        onAction="dshSeqPick6" />
-            <button id="dshSeqFmt7" label="A   B   C"         onAction="dshSeqPick7" />
-          </menu>
+          <!-- v1.14.0：分裂按钮。点主体 = 填充序号；点右侧箭头 = 展开选格式。
+               v1.14.2：清除回车空格移进本组，排在分裂按钮之后（组内自上而下排，
+               所以在它下面）；选完格式后立即等效执行一次填充序号。 -->
+          <splitButton id="dshSeqSplit">
+            <button id="dshBtnSeq" getLabel="dshSeqButtonLabel"
+                    onAction="dshFillSequence"
+                    screentip="点主体=按当前格式填充序号；点右侧箭头=选格式（选完立即套用）"
+                    supertip="【表格】选中一列（或连续单元格）：空单元格按顺序补号，已有编号保留原值只重套格式，表头文字格不动。【正文】支持 Ctrl 多选：按住 Ctrl 选中散在文档各处的几段，点一次就按文档顺序依次编号（原理：先把全文字符阴影清零，再给选区盖临时阴影→识别→清除并逐段验证，保证每次识别都干净、文档不留痕；全文原有的字符阴影会被一并清掉）。两种模式自动切换：选区第一个非空段落【已有序号】→ 统一格式模式（只把带序号的段落改成当前格式，其余不动）；【没有序号】→ 填充模式（依次编号）。空行跳过不占号，表格内段落不动。" />
+            <menu id="dshSeqMenu" label="序号格式"
+                  getLabel="dshSeqMenuLabel"
+                  screentip="选择填充序号时使用的格式"
+                  supertip="点开选择。当前格式会显示在按钮上。选中某个格式后：有选区就立即按新格式填充/统一一次，没有选区就只记下格式、等下次点按钮时再用。正文里，「1 2 3」「一 二 三」「A B C」这类不带分隔符的格式会自动补顿号（1、 一、 A、），否则序号会和正文第一个字黏在一起。">
+              <button id="dshSeqFmt0" label="1   2   3"         onAction="dshSeqPick0" />
+              <button id="dshSeqFmt1" label="01   02   03"      onAction="dshSeqPick1" />
+              <button id="dshSeqFmt2" label="1、  2、  3、"      onAction="dshSeqPick2" />
+              <button id="dshSeqFmt3" label="（1）（2）（3）"    onAction="dshSeqPick3" />
+              <button id="dshSeqFmt4" label="一   二   三"      onAction="dshSeqPick4" />
+              <button id="dshSeqFmt5" label="（一）（二）（三）"  onAction="dshSeqPick5" />
+              <button id="dshSeqFmt6" label="①   ②   ③"        onAction="dshSeqPick6" />
+              <button id="dshSeqFmt7" label="A   B   C"         onAction="dshSeqPick7" />
+            </menu>
+          </splitButton>
+          <button id="dshBtnClean" label="清除回车空格"
+                  onAction="dshCleanBreaks"
+                  screentip="PDF 复制的碎行拼成一段"
+                  supertip="从 PDF / 网页复制进来的文字往往一行一个回车、行首行尾带空格。选中那段文字点一下，回车和空格全部删除，拼成一段连续文字。只处理选区，不动选区以外的内容；选区里含表格时会拒绝（请在正文使用）。制表符保留。" />
         </group>
         <group id="dshSumGroup" label="求和">
           <button id="dshBtnSum" label="区域求和"
